@@ -150,11 +150,61 @@ def handle_logs_command():
         send_message("📄 No log content available.")
 
 
+def trigger_streak_bot():
+    """Trigger the streak bot workflow via GitHub API."""
+    url = f"{GH_API}/repos/{REPO}/actions/workflows/thmbot.yml/dispatches"
+    data = json.dumps({"ref": "main"}).encode()
+    req = urllib.request.Request(url, data=data, method="POST")
+    req.add_header("Authorization", f"token {GH_TOKEN}")
+    req.add_header("Accept", "application/vnd.github.v3+json")
+    try:
+        resp = urllib.request.urlopen(req)
+        return resp.status == 204
+    except Exception as e:
+        print(f"[!] Error triggering workflow: {e}")
+        return False
+
+
+def get_workflow_runs_active():
+    """Check if there's already a running workflow."""
+    url = f"{GH_API}/repos/{REPO}/actions/runs?per_page=5&status=in_progress"
+    req = urllib.request.Request(url)
+    req.add_header("Authorization", f"token {GH_TOKEN}")
+    req.add_header("Accept", "application/vnd.github.v3+json")
+    try:
+        resp = urllib.request.urlopen(req)
+        data = json.loads(resp.read())
+        for run in data.get("workflow_runs", []):
+            if run.get("name") == ".github/workflows/thmbot.yml":
+                return True
+    except:
+        pass
+    return False
+
+
+def handle_now_command():
+    """Handle /now command - run streak bot immediately."""
+    send_chat_action("typing")
+    
+    # Check if already running
+    if get_workflow_runs_active():
+        send_message("⚠️ Streak bot is already running! Wait for it to finish.")
+        return
+    
+    send_message("🚀 *Triggering streak bot now...*\n\nThis takes ~2-3 minutes. You'll get a notification when done.")
+    
+    if trigger_streak_bot():
+        print("[+] Streak bot triggered successfully")
+    else:
+        send_message("❌ Failed to trigger streak bot. Check GitHub Actions.")
+
+
 def handle_start_command():
     """Handle /start command."""
     send_message(
         "👻 *THM Streak Bot*\n\n"
         "Commands:\n"
+        "/now — Run streak bot immediately\n"
         "/logs — Get latest run logs\n"
         "/status — Check bot status\n"
         "/help — Show this help"
@@ -198,6 +248,8 @@ def main():
                 
                 if text == "/logs":
                     handle_logs_command()
+                elif text == "/now":
+                    handle_now_command()
                 elif text == "/start":
                     handle_start_command()
                 elif text == "/status":
