@@ -81,8 +81,8 @@ def recapcha(driver):
             
             key = recognize.recognize_google(audio)
             with open("tryhackmebot.log", 'a') as f:
-                print(f"[+] Recaptcha Passcode: {key}")
-                f.write(f"[+] Recaptcha Passcode: {key}\n")
+                print(f"[+] Recaptcha solved successfully")
+                f.write(f"[+] Recaptcha solved successfully\n")
 
             # Input the recognized text
             driver.find_element(By.ID, "audio-response").send_keys(key.lower())
@@ -104,7 +104,7 @@ def recapcha(driver):
     driver.switch_to.default_content()
 
 
-def login_form(driver):
+def login_form(driver, retry_count=0, max_retries=3):
     """Handle the login form for TryHackMe"""
     config = configparser.ConfigParser()
     config.read("account.conf")
@@ -231,7 +231,12 @@ def login_form(driver):
             with open("tryhackmebot.log", 'a') as f:
                 print("[!] Login failed, current URL doesn't indicate success")
                 f.write("[!] Login failed, current URL doesn't indicate success\n")
-            login_form(driver)
+            if retry_count < max_retries:
+                login_form(driver, retry_count + 1, max_retries)
+            else:
+                with open("tryhackmebot.log", 'a') as f:
+                    print("[!] Max login retries reached")
+                    f.write("[!] Max login retries reached\n")
             
     except KeyboardInterrupt:
         with open("tryhackmebot.log", 'a') as f:
@@ -243,6 +248,12 @@ def login_form(driver):
         with open("tryhackmebot.log", 'a') as f:
             print(f"[!] Something Went Wrong: {e}")
             f.write(f"[!] Something Went Wrong: {e}\n")
-            print("[+] Trying Again...")
-            f.write("[+] Trying Again...\n")
-        login_form(driver)
+        if retry_count < max_retries:
+            print(f"[+] Trying again ({retry_count + 1}/{max_retries})...")
+            with open("tryhackmebot.log", 'a') as f:
+                f.write(f"[+] Trying again ({retry_count + 1}/{max_retries})...\n")
+            login_form(driver, retry_count + 1, max_retries)
+        else:
+            with open("tryhackmebot.log", 'a') as f:
+                print("[!] Max login retries reached, exiting")
+                f.write("[!] Max login retries reached, exiting\n")

@@ -1,8 +1,8 @@
 import os
 import sys
 import datetime
-from login import *
-from keepstreak import *
+from login import login_form
+from keepstreak import keep_streak
 from selenium import webdriver
 from selenium.webdriver.firefox.options import Options
 

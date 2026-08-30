@@ -6,7 +6,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import NoSuchElementException, TimeoutException, ElementClickInterceptedException
 
 
-def keep_streak(driver):
+def keep_streak(driver, retry_count=0, max_retries=3):
     """Maintain the TryHackMe streak by resetting and completing an action in the polkit room"""
     try:
         # Navigate to the polkit room
@@ -195,6 +195,12 @@ def keep_streak(driver):
         with open("tryhackmebot.log", 'a') as f:
             print(f"[!] Something Went Wrong: {e}")
             f.write(f"[!] Something Went Wrong: {e}\n")
-            print("[+] Trying Again...")
-            f.write("[+] Trying Again...\n")
-        keep_streak(driver)
+        if retry_count < max_retries:
+            print(f"[+] Trying again ({retry_count + 1}/{max_retries})...")
+            with open("tryhackmebot.log", 'a') as f:
+                f.write(f"[+] Trying again ({retry_count + 1}/{max_retries})...\n")
+            keep_streak(driver, retry_count + 1, max_retries)
+        else:
+            with open("tryhackmebot.log", 'a') as f:
+                print("[!] Max streak retries reached, exiting")
+                f.write("[!] Max streak retries reached, exiting\n")

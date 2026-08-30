@@ -6,24 +6,28 @@ on:
     - cron: '0 17 * * *'
   workflow_dispatch:  # Allows manual triggering
 
+permissions:
+  contents: read
+  actions: read
+
 jobs:
   maintain-streak:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: '3.12'
 
       - name: Install Firefox and Geckodriver
         run: |
           sudo apt-get update
           sudo apt-get install -y firefox xvfb
-          wget https://github.com/mozilla/geckodriver/releases/download/v0.33.0/geckodriver-v0.33.0-linux64.tar.gz
-          tar -xzf geckodriver-v0.33.0-linux64.tar.gz
+          wget -q https://github.com/mozilla/geckodriver/releases/download/v0.36.0/geckodriver-v0.36.0-linux64.tar.gz
+          tar -xzf geckodriver-v0.36.0-linux64.tar.gz
           chmod +x geckodriver
           sudo mv geckodriver /usr/local/bin/
 
@@ -49,6 +53,7 @@ jobs:
           echo "[account]" > account.conf
           echo "mail = ${{ secrets.THM_EMAIL }}" >> account.conf
           echo "pass = ${{ secrets.THM_PASSWORD }}" >> account.conf
+          chmod 600 account.conf
 
       - name: Setup virtual display
         run: |
@@ -60,10 +65,10 @@ jobs:
           timeout 5m python main.py
         env:
           DISPLAY: :99
-        continue-on-error: true
 
       - name: Upload log and screenshots as artifact
-        uses: actions/upload-artifact@master
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
           name: thm-bot-logs
           path: |
