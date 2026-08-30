@@ -1,0 +1,33 @@
+name: Telegram Log Listener
+
+on:
+  schedule:
+    # Run every 6 hours to listen for /logs commands
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  listen:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350  # ~5.8 hours, restarts every 6 hours
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Run Telegram Listener
+        run: |
+          python telegram_listener.py
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
