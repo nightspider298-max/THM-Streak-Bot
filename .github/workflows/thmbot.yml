@@ -2,8 +2,8 @@ name: TryHackMe Streak Bot
 
 on:
   schedule:
-    # Run daily at 10:30 PM IST (17:00 UTC)
-    - cron: '0 17 * * *'
+    # Run daily at 4:30 PM Sri Lanka time (11:00 UTC)
+    - cron: '0 11 * * *'
   workflow_dispatch:  # Allows manual triggering
 
 permissions:
@@ -61,10 +61,13 @@ jobs:
           export DISPLAY=:99
 
       - name: Run THM Bot with timeout
+        id: streak_run
         run: |
           timeout 5m python main.py
+          echo "status=success" >> $GITHUB_OUTPUT
         env:
           DISPLAY: :99
+        continue-on-error: true
 
       - name: Upload log and screenshots as artifact
         if: always()
@@ -76,3 +79,32 @@ jobs:
             geckodriver.log
             *.png
           retention-days: 7
+
+      - name: Send Telegram notification
+        if: always()
+        run: |
+          STATUS="${{ steps.streak_run.outcome }}"
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          TIMESTAMP=$(TZ="Asia/Colombo" date '+%Y-%m-%d %H:%M:%S %Z')
+          
+          if [ "$STATUS" = "success" ]; then
+            EMOJI="✅"
+            MSG="Streak maintained successfully!"
+          else
+            EMOJI="❌"
+            MSG="Streak bot failed! Check logs."
+          fi
+          
+          TEXT="${EMOJI} *TryHackMe Streak Update*
+          
+📅 *Time:* ${TIMESTAMP}
+${MSG}
+
+🔗 *Logs:* [View Run](${RUN_URL})
+
+_Ghost runner: Your streak guardian 👻_"
+          
+          curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
+            -d chat_id="${{ secrets.TELEGRAM_CHAT_ID }}" \
+            -d parse_mode="Markdown" \
+            -d text="${TEXT}"
