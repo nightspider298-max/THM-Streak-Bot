@@ -22,12 +22,26 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install Firefox and Geckodriver
+      - name: Remove snap Firefox and install real Firefox
         run: |
+          # Remove snap Firefox (wrapper script, not a real binary)
+          sudo snap remove firefox || true
+          # Remove snap wrapper if still exists
+          sudo rm -f /usr/bin/firefox || true
+          # Install Firefox ESR from Mozilla PPA (real binary, not snap)
+          sudo add-apt-repository -y ppa:mozillateam/ppa
+          echo 'Package: *
+          Pin: release o=LP-PPA-mozillateam
+          Pin-Priority: 1001' | sudo tee /etc/apt/preferences.d/mozilla-firefox
           sudo apt-get update
-          sudo apt-get install -y firefox-esr xvfb || sudo apt-get install -y firefox xvfb
-          which firefox || which firefox-esr
-          firefox --version || firefox-esr --version
+          sudo apt-get install -y firefox-esr
+          # Set up symlink so "firefox" command works
+          sudo ln -sf /usr/bin/firefox-esr /usr/bin/firefox
+          firefox --version
+
+      - name: Install Geckodriver and Xvfb
+        run: |
+          sudo apt-get install -y xvfb
           wget -q https://github.com/mozilla/geckodriver/releases/download/v0.36.0/geckodriver-v0.36.0-linux64.tar.gz
           tar -xzf geckodriver-v0.36.0-linux64.tar.gz
           chmod +x geckodriver
@@ -39,8 +53,13 @@ jobs:
 
       - name: Verify dependency versions
         run: |
+          echo "=== Firefox ==="
           firefox --version
+          which firefox
+          file $(which firefox)
+          echo "=== Geckodriver ==="
           geckodriver --version
+          echo "=== Python ==="
           python --version
           pip --version
 
