@@ -34,6 +34,9 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
+          # Wait 60s for Vercel rate limit cooldown on GitHub Actions IPs
+          echo "Waiting 60s for rate limit cooldown..."
+          sleep 60
           timeout 10m python main.py
           echo "status=success" >> $GITHUB_OUTPUT
         continue-on-error: true
