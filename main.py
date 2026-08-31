@@ -253,7 +253,7 @@ def get_proxy_dict():
     return None
 
 
-def thm_get(session, url, headers=None, timeout=15):
+def thm_get(session, url, headers=None, timeout=30):
     """Make a GET request to THM with optional proxy."""
     proxy = get_proxy_dict()
     if proxy:
@@ -270,7 +270,7 @@ def thm_get(session, url, headers=None, timeout=15):
     return session.get(url, **kwargs)
 
 
-def thm_post(session, url, headers=None, json_data=None, timeout=15):
+def thm_post(session, url, headers=None, json_data=None, timeout=30):
     """Make a POST request to THM with optional proxy."""
     proxy = get_proxy_dict()
     if proxy:
@@ -400,25 +400,34 @@ def match_answer(question_text, writeup_pairs):
 
 def join_room(session, csrf, room_code):
     """Join a THM room."""
-    r = thm_post(session, "https://tryhackme.com/api/v2/rooms/join",
-                 headers=make_headers(csrf),
-                 json_data={"roomCode": room_code})
-    ct = r.headers.get("content-type", "")
-    if "json" in ct:
-        data = r.json()
-        return data.get("status") == "success"
-    return False
+    try:
+        r = thm_post(session, "https://tryhackme.com/api/v2/rooms/join",
+                     headers=make_headers(csrf),
+                     json_data={"roomCode": room_code})
+        ct = r.headers.get("content-type", "")
+        if "json" in ct:
+            data = r.json()
+            return data.get("status") == "success"
+        log(f"  [!] join {room_code}: non-json response (status={r.status_code})")
+        return False
+    except Exception as e:
+        log(f"  [!] join {room_code}: {e}")
+        return False
 
 
 def get_tasks(session, csrf, room_code):
     """Get room tasks."""
-    r = thm_get(session, f"https://tryhackme.com/api/v2/rooms/tasks?roomCode={room_code}",
-                headers=make_headers(csrf, False))
-    ct = r.headers.get("content-type", "")
-    if "json" not in ct:
+    try:
+        r = thm_get(session, f"https://tryhackme.com/api/v2/rooms/tasks?roomCode={room_code}",
+                    headers=make_headers(csrf, False))
+        ct = r.headers.get("content-type", "")
+        if "json" not in ct:
+            return []
+        data = r.json()
+        return data.get("data", []) if data.get("status") == "success" else []
+    except Exception as e:
+        log(f"  [!] tasks {room_code}: {e}")
         return []
-    data = r.json()
-    return data.get("data", []) if data.get("status") == "success" else []
 
 
 def submit_answer(session, csrf, task_id, question_no, answer, room_code):
@@ -561,17 +570,26 @@ def main():
     answers_submitted = 0
     streak_increased = False
     solved_room = None
+    rooms_failed = 0
 
-    for code in all_codes[:MAX_ROOMS_TO_CHECK]:
+    for idx, code in enumerate(all_codes[:MAX_ROOMS_TO_CHECK]):
         thm_code = code_to_thm(code)
 
         # Join room
         if not join_room(session, csrf, thm_code):
+            rooms_failed += 1
+            if rooms_failed <= 3:
+                log(f"  [!] Failed to join {thm_code} (room {idx+1})")
+            elif rooms_failed == 4:
+                log(f"  [!] ... suppressing further join failure logs")
             continue
 
         # Get tasks
         tasks = get_tasks(session, csrf, thm_code)
         if not tasks:
+            rooms_failed += 1
+            if rooms_failed <= 3:
+                log(f"  [!] Failed to get tasks for {thm_code}")
             continue
 
         # Find unanswered questions
@@ -650,6 +668,7 @@ def main():
     log(f"  Streak Broken: {final_user['isStreakBroken']}")
     log(f"  Total Points: {final_user['totalPoints']}")
     log(f"  Rooms Checked: {rooms_checked}")
+    log(f"  Rooms Failed (join/task): {rooms_failed}")
     log(f"  Answers Submitted: {answers_submitted}")
     log(f"  Streak Increased: {streak_increased}")
     log("=" * 60)
