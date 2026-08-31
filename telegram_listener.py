@@ -150,10 +150,13 @@ def handle_logs_command():
         send_message("📄 No log content available.")
 
 
-def trigger_streak_bot():
+def trigger_streak_bot(force_new=False):
     """Trigger the streak bot workflow via GitHub API."""
     url = f"{GH_API}/repos/{REPO}/actions/workflows/thmbot.yml/dispatches"
-    data = json.dumps({"ref": "main"}).encode()
+    payload = {"ref": "main"}
+    if force_new:
+        payload["inputs"] = {"force_new": "true"}
+    data = json.dumps(payload).encode()
     req = urllib.request.Request(url, data=data, method="POST")
     req.add_header("Authorization", f"token {GH_TOKEN}")
     req.add_header("Accept", "application/vnd.github.v3+json")
@@ -199,12 +202,30 @@ def handle_now_command():
         send_message("❌ Failed to trigger streak bot. Check GitHub Actions.")
 
 
+def handle_new_command():
+    """Handle /new command - solve a brand new challenge."""
+    send_chat_action("typing")
+    
+    # Check if already running
+    if get_workflow_runs_active():
+        send_message("⚠️ Streak bot is already running! Wait for it to finish.")
+        return
+    
+    send_message("🎯 *Solving a NEW challenge...*\n\nFetching a fresh room from the writeup repo. Takes ~2-3 minutes.")
+    
+    if trigger_streak_bot(force_new=True):
+        print("[+] New challenge triggered successfully")
+    else:
+        send_message("❌ Failed to trigger. Check GitHub Actions.")
+
+
 def handle_start_command():
     """Handle /start command."""
     send_message(
         "👻 *THM Streak Bot*\n\n"
         "Commands:\n"
-        "/now — Run streak bot immediately\n"
+        "/now — Run streak bot (maintain streak)\n"
+        "/new — Solve a brand NEW challenge\n"
         "/logs — Get latest run logs\n"
         "/status — Check bot status\n"
         "/help — Show this help"
@@ -250,6 +271,8 @@ def main():
                     handle_logs_command()
                 elif text == "/now":
                     handle_now_command()
+                elif text == "/new":
+                    handle_new_command()
                 elif text == "/start":
                     handle_start_command()
                 elif text == "/status":

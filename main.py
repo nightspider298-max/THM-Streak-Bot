@@ -460,8 +460,12 @@ def fetch_room_codes():
 
 
 def main():
+    # Parse command line args
+    force_new = "--force-new" in sys.argv
+
     log("=" * 60)
-    log("THM Streak Bot v3.0 - Cookie + Writeup (FREE)")
+    mode = "FORCE NEW CHALLENGE" if force_new else "Streak Maintenance"
+    log(f"THM Streak Bot v3.0 — {mode}")
     log(f"Run started at {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     log("=" * 60)
 
@@ -531,8 +535,8 @@ def main():
     log(f"[+] Logged in as: {user['username']}")
     log(f"[+] Current streak: {user['currentStreak']}, broken: {user['isStreakBroken']}")
 
-    # Check if streak already maintained today
-    if user["hasFirstAndLastAnswered"] and not user["isStreakBroken"]:
+    # Check if streak already maintained today (skip if --force-new)
+    if not force_new and user["hasFirstAndLastAnswered"] and not user["isStreakBroken"]:
         msg = (f"THM Bot: Streak already maintained today!\n"
                f"Streak: {user['currentStreak']}\n"
                f"Largest: {user['largestStreak']}")
@@ -556,6 +560,7 @@ def main():
     rooms_checked = 0
     answers_submitted = 0
     streak_increased = False
+    solved_room = None
 
     for code in all_codes[:MAX_ROOMS_TO_CHECK]:
         thm_code = code_to_thm(code)
@@ -613,11 +618,12 @@ def main():
             if data.get("isCorrect"):
                 log(f"  [+] CORRECT! Score: +{data.get('scoreAwarded', 0)}")
                 answers_submitted += 1
+                solved_room = thm_code
 
                 if data.get("isStreakIncreased"):
                     log(f"  [+] STREAK INCREASED! New: {data.get('currentStreak')}")
                     streak_increased = True
-                    break
+                break  # One answer per room is enough
             else:
                 msg = result.get("message", "unknown error")
                 log(f"  [!] Wrong or error: {msg}")
@@ -627,7 +633,7 @@ def main():
 
             time.sleep(ANSWER_DELAY)
 
-        if streak_increased:
+        if streak_increased or (force_new and solved_room):
             break
 
         rooms_checked += 1
@@ -657,6 +663,8 @@ def main():
            f"Rooms checked: {rooms_checked}\n"
            f"Answers submitted: {answers_submitted}\n"
            f"Streak increased: {streak_increased}")
+    if solved_room:
+        msg += f"\nSolved: {solved_room}"
     send_telegram(msg)
 
     log(f"\n[+] Bot run completed at {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")

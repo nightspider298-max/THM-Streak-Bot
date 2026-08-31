@@ -5,6 +5,15 @@ on:
     # Run daily at 4:30 PM Sri Lanka time (11:00 UTC)
     - cron: '0 11 * * *'
   workflow_dispatch:  # Allows manual triggering
+    inputs:
+      force_new:
+        description: 'Force solving a new challenge (skip streak check)'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
 
 permissions:
   contents: read
@@ -33,11 +42,17 @@ jobs:
           THM_FIREFOX_COOKIES: ${{ secrets.THM_FIREFOX_COOKIES }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          FORCE_NEW: ${{ inputs.force_new || 'false' }}
         run: |
           # Wait 60s for Vercel rate limit cooldown on GitHub Actions IPs
           echo "Waiting 60s for rate limit cooldown..."
           sleep 60
-          timeout 10m python main.py
+          if [ "$FORCE_NEW" = "true" ]; then
+            echo "Force new mode: will solve a new challenge"
+            timeout 10m python main.py --force-new
+          else
+            timeout 10m python main.py
+          fi
           echo "status=success" >> $GITHUB_OUTPUT
         continue-on-error: true
 
