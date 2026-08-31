@@ -492,6 +492,7 @@ def main():
 
     # Step 2b: Find a working proxy if needed (Vercel blocks GitHub Actions IPs)
     global ACTIVE_PROXY
+    proxy_for_csrf = None
     if not ACTIVE_PROXY:
         # Try direct connection first
         try:
@@ -501,15 +502,19 @@ def main():
             log("[!] Direct connection blocked by Vercel, searching for proxy...")
             proxy = find_working_proxy(cookies)
             if proxy:
-                ACTIVE_PROXY = proxy
-                log(f"[+] Using proxy: {proxy}")
+                proxy_for_csrf = proxy
+                log(f"[+] Using proxy for CSRF: {proxy}")
             else:
                 log("[!] No proxy found, will retry direct connection")
+    else:
+        proxy_for_csrf = ACTIVE_PROXY
 
     # Step 2c: Get CSRF with retries
     csrf = None
     for attempt in range(5):
         try:
+            if proxy_for_csrf and not ACTIVE_PROXY:
+                ACTIVE_PROXY = proxy_for_csrf
             csrf = get_csrf(session)
             log(f"[+] CSRF token: {csrf[:20]}...")
             break
@@ -523,6 +528,7 @@ def main():
                 if attempt == 2 and not ACTIVE_PROXY:
                     proxy = find_working_proxy(cookies)
                     if proxy:
+                        proxy_for_csrf = proxy
                         ACTIVE_PROXY = proxy
                         log(f"[+] Switching to proxy: {proxy}")
                 session = create_session(cookies)
@@ -543,6 +549,22 @@ def main():
 
     log(f"[+] Logged in as: {user['username']}")
     log(f"[+] Current streak: {user['currentStreak']}, broken: {user['isStreakBroken']}")
+
+    # Step 3b: Try to switch from proxy to direct connection for room operations
+    # (proxies work for GET but THM WAF blocks POST through proxies)
+    if ACTIVE_PROXY:
+        log("[+] Testing direct connection for room operations...")
+        try:
+            ACTIVE_PROXY = None  # Try direct
+            test_user = get_user_info(session, csrf)
+            if test_user:
+                log("[+] Direct connection works for API calls! Switching to direct.")
+            else:
+                log("[!] Direct connection failed, staying on proxy.")
+                ACTIVE_PROXY = proxy_for_csrf
+        except Exception as e:
+            log(f"[!] Direct test failed: {e}, staying on proxy.")
+            ACTIVE_PROXY = proxy_for_csrf
 
     # Check if streak already maintained today (skip if --force-new)
     if not force_new and user["hasFirstAndLastAnswered"] and not user["isStreakBroken"]:
