@@ -132,23 +132,44 @@ def create_session(cookies):
         # Also try with leading dot if not already present
         if not host.startswith("."):
             session.cookies.set(name, value, domain=f".{domain}", path=path)
+    # Set default headers to look like a real browser
+    session.headers.update({
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Referer": "https://tryhackme.com/",
+        "Origin": "https://tryhackme.com",
+    })
     return session
 
 
 def get_csrf(session):
     """Get CSRF token from THM."""
+    # Try API endpoint first
     r = session.get("https://tryhackme.com/api/v2/auth/csrf",
                      headers={"Accept": "application/json"})
     ct = r.headers.get("content-type", "")
-    if "json" not in ct:
-        # Might be getting Vercel challenge or HTML page
-        log(f"[!] CSRF endpoint returned non-JSON: CT={ct[:50]}")
-        log(f"[!] Response body: {r.text[:200]}")
-        raise Exception(f"CSRF endpoint returned non-JSON: {r.status_code}")
-    data = r.json()
-    if data.get("status") == "success":
-        return data["data"]["token"]
-    raise Exception(f"CSRF fetch failed: {data}")
+    if "json" in ct:
+        data = r.json()
+        if data.get("status") == "success":
+            return data["data"]["token"]
+        raise Exception(f"CSRF fetch failed: {data}")
+
+    # Fallback: Try to get CSRF from the main page HTML
+    log(f"[!] API CSRF blocked (status={r.status_code}), trying HTML fallback...")
+    r2 = session.get("https://tryhackme.com/", headers={"Accept": "text/html"})
+    # Look for csrf token in HTML meta tags or scripts
+    import re
+    match = re.search(r'csrf["\s:=]+["\']([a-zA-Z0-9_-]{20,})["\']', r2.text)
+    if match:
+        return match.group(1)
+
+    # Another fallback: try the dashboard page
+    r3 = session.get("https://tryhackme.com/dashboard", headers={"Accept": "text/html"})
+    match2 = re.search(r'csrf["\s:=]+["\']([a-zA-Z0-9_-]{20,})["\']', r3.text)
+    if match2:
+        return match2.group(1)
+
+    raise Exception(f"Could not get CSRF token from any source. Last status: {r.status_code}")
 
 
 def make_headers(csrf, json_ct=True):
@@ -349,20 +370,22 @@ def main():
 
     # Step 2b: Get CSRF with retries
     csrf = None
-    for attempt in range(3):
+    for attempt in range(5):
         try:
             csrf = get_csrf(session)
             log(f"[+] CSRF token: {csrf[:20]}...")
             break
         except Exception as e:
             log(f"[!] CSRF attempt {attempt+1} failed: {e}")
-            if attempt < 2:
-                time.sleep(5)
+            if attempt < 4:
+                wait = 10 * (attempt + 1)  # 10s, 20s, 30s, 40s
+                log(f"[!] Waiting {wait}s before retry...")
+                time.sleep(wait)
                 # Recreate session with cookies
                 session = create_session(cookies)
     
     if not csrf:
-        msg = "FATAL: Could not get CSRF token after 3 attempts. Cookies may be expired."
+        msg = "FATAL: Could not get CSRF token after 5 attempts. Vercel may be blocking GitHub Actions IPs."
         log(f"[!] {msg}")
         send_telegram(f"THM Bot Error: {msg}")
         sys.exit(1)
