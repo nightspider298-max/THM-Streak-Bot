@@ -25,12 +25,11 @@ jobs:
       - name: Install Firefox directly from Mozilla
         run: |
           # Download Firefox directly from Mozilla (avoids snap and PPA issues)
-          FIREFOX_VERSION="131.0"
-          wget -q "https://download.mozilla.org/?product=firefox-latest-ssl&os=linux64&lang=en-US" -O /tmp/firefox.tar.bz2
-          sudo tar -xjf /tmp/firefox.tar.bz2 -C /opt/
+          wget -q "https://download.mozilla.org/?product=firefox-latest-ssl&os=linux64&lang=en-US" -O /tmp/firefox.tar.xz
+          sudo tar -xJf /tmp/firefox.tar.xz -C /opt/
           sudo ln -sf /opt/firefox/firefox /usr/local/bin/firefox
           sudo ln -sf /opt/firefox/firefox /usr/bin/firefox
-          rm -f /tmp/firefox.tar.bz2
+          rm -f /tmp/firefox.tar.xz
           echo "=== Firefox installed ==="
           firefox --version
           file /opt/firefox/firefox
