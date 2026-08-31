@@ -19,7 +19,6 @@ def main():
     firefox_options.add_argument("--disable-gpu")
     firefox_options.add_argument("--disable-extensions")
     firefox_options.add_argument("--disable-infobars")
-    firefox_options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36")
     firefox_options.set_preference("media.volume_scale", "0.0")
     firefox_options.set_preference("dom.push.enabled", False)
     firefox_options.set_preference("intl.accept_languages", "en-US, en")
@@ -27,6 +26,28 @@ def main():
     
     # Set MOZ_HEADLESS environment variable for GitHub Actions
     os.environ['MOZ_HEADLESS'] = '1'
+    
+    # Auto-detect Firefox binary path
+    import shutil
+    firefox_paths = [
+        "/usr/bin/firefox",
+        "/usr/bin/firefox-esr",
+        "/snap/bin/firefox",
+        "/usr/local/bin/firefox",
+        shutil.which("firefox"),
+        shutil.which("firefox-esr"),
+    ]
+    firefox_binary = None
+    for path in firefox_paths:
+        if path and os.path.isfile(path):
+            firefox_binary = path
+            break
+    
+    if firefox_binary:
+        firefox_options.binary_location = firefox_binary
+        print(f"[*] Firefox binary: {firefox_binary}")
+    else:
+        print("[!] WARNING: Firefox binary not found, Selenium will try auto-detect")
     
     try:
         # Configure the WebDriver with direct Firefox options

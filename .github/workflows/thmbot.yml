@@ -25,7 +25,9 @@ jobs:
       - name: Install Firefox and Geckodriver
         run: |
           sudo apt-get update
-          sudo apt-get install -y firefox xvfb
+          sudo apt-get install -y firefox-esr xvfb || sudo apt-get install -y firefox xvfb
+          which firefox || which firefox-esr
+          firefox --version || firefox-esr --version
           wget -q https://github.com/mozilla/geckodriver/releases/download/v0.36.0/geckodriver-v0.36.0-linux64.tar.gz
           tar -xzf geckodriver-v0.36.0-linux64.tar.gz
           chmod +x geckodriver
