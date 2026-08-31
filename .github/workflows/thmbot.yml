@@ -22,17 +22,18 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Install Chrome
+        run: |
+          wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | sudo gpg --dearmor -o /usr/share/keyrings/google-chrome.gpg
+          echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] http://dl.google.com/linux/chrome/deb/ stable main" | sudo tee /etc/apt/sources.list.d/google-chrome.list
+          sudo apt-get update
+          sudo apt-get install -y google-chrome-stable
+          google-chrome --version
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          python -m playwright install firefox --with-deps
-
-      - name: Verify versions
-        run: |
-          python --version
-          pip show playwright
-          python -c "from playwright.sync_api import sync_playwright; print('Playwright OK')"
 
       - name: Create account configuration
         run: |
@@ -44,8 +45,10 @@ jobs:
       - name: Run THM Bot with timeout
         id: streak_run
         run: |
-          timeout 5m python main.py
+          timeout 8m python main.py
           echo "status=success" >> $GITHUB_OUTPUT
+        env:
+          CAPSOLVER_API_KEY: ${{ secrets.CAPSOLVER_API_KEY }}
         continue-on-error: true
 
       - name: Upload log and screenshots as artifact
