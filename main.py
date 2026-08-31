@@ -122,20 +122,19 @@ def load_cookies():
 
 
 def create_session(cookies):
-    """Create a curl_cffi session with Firefox cookies."""
-    from curl_cffi import requests as cffi_requests
-    session = cffi_requests.Session(impersonate="chrome120")
+    """Create a cloudscraper session with Firefox cookies."""
+    import cloudscraper
+    session = cloudscraper.create_scraper(
+        browser={'browser': 'chrome', 'platform': 'linux'}
+    )
     for name, value, host, path in cookies:
-        # Set cookie with both dotted and non-dotted domain for maximum compatibility
         domain = host.lstrip(".")
         session.cookies.set(name, value, domain=domain, path=path)
-        # Also try with leading dot if not already present
         if not host.startswith("."):
             session.cookies.set(name, value, domain=f".{domain}", path=path)
-    # Set default headers to look like a real browser
     session.headers.update({
+        "Accept": "application/json",
         "Accept-Language": "en-US,en;q=0.9",
-        "Accept-Encoding": "gzip, deflate, br",
         "Referer": "https://tryhackme.com/",
         "Origin": "https://tryhackme.com",
     })
