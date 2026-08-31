@@ -5,9 +5,10 @@ Uses Firefox cookies + curl_cffi API + writeup repos (100% FREE).
 
 Flow:
 1. Load cookies from base64-encoded THM_FIREFOX_COOKIES env var
-2. Fetch room codes from thmrevenant writeup repo
-3. For each room: join → get tasks → find unanswered → match writeup answers → submit
-4. Send Telegram notification with results
+2. Find a working HTTPS proxy (Vercel blocks GitHub Actions IPs)
+3. Fetch room codes from thmrevenant writeup repo
+4. For each room: join → get tasks → find unanswered → match writeup answers → submit
+5. Send Telegram notification with results
 """
 import os
 import sys
@@ -22,6 +23,10 @@ import re
 import base64
 import glob as globmod
 
+# Suppress SSL warnings for proxy usage
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
 # --- Configuration ---
 ANSWER_DELAY = 15  # seconds between answer submissions
 MAX_ROOMS_TO_CHECK = 500  # how many rooms to scan from writeup repo
@@ -29,6 +34,8 @@ WRITEUP_REPO = "https://raw.githubusercontent.com/thmrevenant/tryhackme/main/roo
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 COOKIE_DB_PATH = os.environ.get("THM_COOKIE_DB", "")
+# Global proxy (set at runtime if needed)
+ACTIVE_PROXY = os.environ.get("THM_PROXY", None)
 
 
 def log(msg):
@@ -141,11 +148,74 @@ def create_session(cookies):
     return session
 
 
+def find_working_proxy(cookies):
+    """Find a working HTTPS proxy that can reach THM API."""
+    from curl_cffi import requests as cffi_requests
+
+    log("[+] Searching for working HTTPS proxy...")
+
+    # Get proxy list from free sources
+    proxy_list = []
+    try:
+        import requests
+        r = requests.get(
+            "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=5000&country=all&ssl=yes&anonymity=all",
+            timeout=10
+        )
+        proxy_list = [p.strip() for p in r.text.strip().split("\n") if p.strip() and ":" in p]
+        log(f"[+] Got {len(proxy_list)} proxies from proxyscrape")
+    except Exception as e:
+        log(f"[!] Failed to get proxies from proxyscrape: {e}")
+
+    if not proxy_list:
+        try:
+            import requests
+            r = requests.get(
+                "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt",
+                timeout=10
+            )
+            proxy_list = [p.strip() for p in r.text.strip().split("\n") if p.strip() and ":" in p][:100]
+            log(f"[+] Got {len(proxy_list)} proxies from GitHub list")
+        except Exception as e:
+            log(f"[!] Failed to get proxies from GitHub: {e}")
+
+    if not proxy_list:
+        log("[!] No proxies available, will try direct connection")
+        return None
+
+    # Test proxies with a small session
+    test_session = cffi_requests.Session(impersonate="chrome120")
+    for name, value, host, path in cookies:
+        domain = host.lstrip(".")
+        test_session.cookies.set(name, value, domain=domain, path=path)
+
+    for proxy in proxy_list[:30]:
+        proxy_url = f"http://{proxy}"
+        try:
+            r = test_session.get(
+                "https://tryhackme.com/api/v2/auth/csrf",
+                headers={"Accept": "application/json"},
+                proxies={"https": proxy_url, "http": proxy_url},
+                timeout=8,
+                verify=False
+            )
+            ct = r.headers.get("content-type", "")
+            if "json" in ct:
+                d = r.json()
+                if d.get("status") == "success":
+                    log(f"[+] Found working proxy: {proxy}")
+                    return proxy_url
+        except:
+            continue
+
+    log("[!] No working proxy found, will try direct connection")
+    return None
+
+
 def get_csrf(session):
     """Get CSRF token from THM."""
-    # Try API endpoint first
-    r = session.get("https://tryhackme.com/api/v2/auth/csrf",
-                     headers={"Accept": "application/json"})
+    r = thm_get(session, "https://tryhackme.com/api/v2/auth/csrf",
+                headers={"Accept": "application/json"})
     ct = r.headers.get("content-type", "")
     if "json" in ct:
         data = r.json()
@@ -155,15 +225,12 @@ def get_csrf(session):
 
     # Fallback: Try to get CSRF from the main page HTML
     log(f"[!] API CSRF blocked (status={r.status_code}), trying HTML fallback...")
-    r2 = session.get("https://tryhackme.com/", headers={"Accept": "text/html"})
-    # Look for csrf token in HTML meta tags or scripts
-    import re
+    r2 = thm_get(session, "https://tryhackme.com/", headers={"Accept": "text/html"})
     match = re.search(r'csrf["\s:=]+["\']([a-zA-Z0-9_-]{20,})["\']', r2.text)
     if match:
         return match.group(1)
 
-    # Another fallback: try the dashboard page
-    r3 = session.get("https://tryhackme.com/dashboard", headers={"Accept": "text/html"})
+    r3 = thm_get(session, "https://tryhackme.com/dashboard", headers={"Accept": "text/html"})
     match2 = re.search(r'csrf["\s:=]+["\']([a-zA-Z0-9_-]{20,})["\']', r3.text)
     if match2:
         return match2.group(1)
@@ -179,10 +246,53 @@ def make_headers(csrf, json_ct=True):
     return h
 
 
+def get_proxy_dict():
+    """Return proxy dict if a proxy is configured."""
+    if ACTIVE_PROXY:
+        return {"https": ACTIVE_PROXY, "http": ACTIVE_PROXY}
+    return None
+
+
+def thm_get(session, url, headers=None, timeout=15):
+    """Make a GET request to THM with optional proxy."""
+    proxy = get_proxy_dict()
+    if proxy:
+        # Use curl_cffi for proxy requests (better SSL handling)
+        from curl_cffi import requests as cffi_requests
+        s = cffi_requests.Session(impersonate="chrome120")
+        # Copy cookies from main session
+        for c in session.cookies:
+            s.cookies.set(c.name, c.value, domain=c.domain, path=c.path)
+        kwargs = {"headers": headers or {}, "timeout": timeout, "verify": False,
+                  "proxies": proxy}
+        return s.get(url, **kwargs)
+    kwargs = {"headers": headers, "timeout": timeout}
+    return session.get(url, **kwargs)
+
+
+def thm_post(session, url, headers=None, json_data=None, timeout=15):
+    """Make a POST request to THM with optional proxy."""
+    proxy = get_proxy_dict()
+    if proxy:
+        from curl_cffi import requests as cffi_requests
+        s = cffi_requests.Session(impersonate="chrome120")
+        for c in session.cookies:
+            s.cookies.set(c.name, c.value, domain=c.domain, path=c.path)
+        kwargs = {"headers": headers or {}, "timeout": timeout, "verify": False,
+                  "proxies": proxy}
+        if json_data is not None:
+            kwargs["json"] = json_data
+        return s.post(url, **kwargs)
+    kwargs = {"headers": headers, "timeout": timeout}
+    if json_data is not None:
+        kwargs["json"] = json_data
+    return session.post(url, **kwargs)
+
+
 def get_user_info(session, csrf):
     """Get user info and streak status."""
-    r = session.get("https://tryhackme.com/api/v2/users/self",
-                     headers=make_headers(csrf, False))
+    r = thm_get(session, "https://tryhackme.com/api/v2/users/self",
+                headers=make_headers(csrf, False))
     data = r.json()
     if data.get("status") != "success":
         return None
@@ -290,9 +400,9 @@ def match_answer(question_text, writeup_pairs):
 
 def join_room(session, csrf, room_code):
     """Join a THM room."""
-    r = session.post("https://tryhackme.com/api/v2/rooms/join",
-                     headers=make_headers(csrf),
-                     json={"roomCode": room_code})
+    r = thm_post(session, "https://tryhackme.com/api/v2/rooms/join",
+                 headers=make_headers(csrf),
+                 json_data={"roomCode": room_code})
     ct = r.headers.get("content-type", "")
     if "json" in ct:
         data = r.json()
@@ -302,8 +412,8 @@ def join_room(session, csrf, room_code):
 
 def get_tasks(session, csrf, room_code):
     """Get room tasks."""
-    r = session.get(f"https://tryhackme.com/api/v2/rooms/tasks?roomCode={room_code}",
-                     headers=make_headers(csrf, False))
+    r = thm_get(session, f"https://tryhackme.com/api/v2/rooms/tasks?roomCode={room_code}",
+                headers=make_headers(csrf, False))
     ct = r.headers.get("content-type", "")
     if "json" not in ct:
         return []
@@ -313,14 +423,14 @@ def get_tasks(session, csrf, room_code):
 
 def submit_answer(session, csrf, task_id, question_no, answer, room_code):
     """Submit an answer to a room question."""
-    r = session.post("https://tryhackme.com/api/v2/rooms/answer",
-                     headers=make_headers(csrf),
-                     json={
-                         "taskId": task_id,
-                         "questionNo": question_no,
-                         "answer": answer,
-                         "roomCode": room_code
-                     })
+    r = thm_post(session, "https://tryhackme.com/api/v2/rooms/answer",
+                 headers=make_headers(csrf),
+                 json_data={
+                     "taskId": task_id,
+                     "questionNo": question_no,
+                     "answer": answer,
+                     "roomCode": room_code
+                 })
     ct = r.headers.get("content-type", "")
     if "json" in ct:
         return r.json()
@@ -367,7 +477,23 @@ def main():
     # Step 2: Create session
     session = create_session(cookies)
 
-    # Step 2b: Get CSRF with retries
+    # Step 2b: Find a working proxy if needed (Vercel blocks GitHub Actions IPs)
+    global ACTIVE_PROXY
+    if not ACTIVE_PROXY:
+        # Try direct connection first
+        try:
+            csrf_test = get_csrf(session)
+            log(f"[+] Direct connection works, CSRF: {csrf_test[:20]}...")
+        except Exception:
+            log("[!] Direct connection blocked by Vercel, searching for proxy...")
+            proxy = find_working_proxy(cookies)
+            if proxy:
+                ACTIVE_PROXY = proxy
+                log(f"[+] Using proxy: {proxy}")
+            else:
+                log("[!] No proxy found, will retry direct connection")
+
+    # Step 2c: Get CSRF with retries
     csrf = None
     for attempt in range(5):
         try:
@@ -380,7 +506,12 @@ def main():
                 wait = 10 * (attempt + 1)  # 10s, 20s, 30s, 40s
                 log(f"[!] Waiting {wait}s before retry...")
                 time.sleep(wait)
-                # Recreate session with cookies
+                # Try finding a different proxy on retry
+                if attempt == 2 and not ACTIVE_PROXY:
+                    proxy = find_working_proxy(cookies)
+                    if proxy:
+                        ACTIVE_PROXY = proxy
+                        log(f"[+] Switching to proxy: {proxy}")
                 session = create_session(cookies)
     
     if not csrf:
