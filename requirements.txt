@@ -1,3 +1,2 @@
-undetected-chromedriver>=3.5.0
-selenium>=4.15.0
-capsolver>=1.0.0
+curl_cffi>=0.5.0
+requests>=2.31.0
