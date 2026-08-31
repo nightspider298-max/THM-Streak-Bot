@@ -126,7 +126,12 @@ def create_session(cookies):
     from curl_cffi import requests as cffi_requests
     session = cffi_requests.Session(impersonate="chrome120")
     for name, value, host, path in cookies:
-        session.cookies.set(name, value, domain=host.lstrip("."), path=path)
+        # Set cookie with both dotted and non-dotted domain for maximum compatibility
+        domain = host.lstrip(".")
+        session.cookies.set(name, value, domain=domain, path=path)
+        # Also try with leading dot if not already present
+        if not host.startswith("."):
+            session.cookies.set(name, value, domain=f".{domain}", path=path)
     return session
 
 
@@ -134,6 +139,12 @@ def get_csrf(session):
     """Get CSRF token from THM."""
     r = session.get("https://tryhackme.com/api/v2/auth/csrf",
                      headers={"Accept": "application/json"})
+    ct = r.headers.get("content-type", "")
+    if "json" not in ct:
+        # Might be getting Vercel challenge or HTML page
+        log(f"[!] CSRF endpoint returned non-JSON: CT={ct[:50]}")
+        log(f"[!] Response body: {r.text[:200]}")
+        raise Exception(f"CSRF endpoint returned non-JSON: {r.status_code}")
     data = r.json()
     if data.get("status") == "success":
         return data["data"]["token"]
@@ -335,8 +346,26 @@ def main():
 
     # Step 2: Create session
     session = create_session(cookies)
-    csrf = get_csrf(session)
-    log(f"[+] CSRF token: {csrf[:20]}...")
+
+    # Step 2b: Get CSRF with retries
+    csrf = None
+    for attempt in range(3):
+        try:
+            csrf = get_csrf(session)
+            log(f"[+] CSRF token: {csrf[:20]}...")
+            break
+        except Exception as e:
+            log(f"[!] CSRF attempt {attempt+1} failed: {e}")
+            if attempt < 2:
+                time.sleep(5)
+                # Recreate session with cookies
+                session = create_session(cookies)
+    
+    if not csrf:
+        msg = "FATAL: Could not get CSRF token after 3 attempts. Cookies may be expired."
+        log(f"[!] {msg}")
+        send_telegram(f"THM Bot Error: {msg}")
+        sys.exit(1)
 
     # Step 3: Verify login
     user = get_user_info(session, csrf)
