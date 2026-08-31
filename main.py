@@ -257,9 +257,9 @@ def thm_get(session, url, headers=None, timeout=30):
     """Make a GET request to THM with optional proxy."""
     proxy = get_proxy_dict()
     if proxy:
-        # Use curl_cffi for proxy requests (better SSL handling)
-        from curl_cffi import requests as cffi_requests
-        s = cffi_requests.Session(impersonate="chrome120")
+        # Use cloudscraper for proxy requests (curl_cffi impersonation triggers WAF)
+        import cloudscraper
+        s = cloudscraper.create_scraper()
         # Copy cookies from main session
         for c in session.cookies:
             s.cookies.set(c.name, c.value, domain=c.domain, path=c.path)
@@ -274,8 +274,8 @@ def thm_post(session, url, headers=None, json_data=None, timeout=30):
     """Make a POST request to THM with optional proxy."""
     proxy = get_proxy_dict()
     if proxy:
-        from curl_cffi import requests as cffi_requests
-        s = cffi_requests.Session(impersonate="chrome120")
+        import cloudscraper
+        s = cloudscraper.create_scraper()
         for c in session.cookies:
             s.cookies.set(c.name, c.value, domain=c.domain, path=c.path)
         kwargs = {"headers": headers or {}, "timeout": timeout, "verify": False,
@@ -549,22 +549,6 @@ def main():
 
     log(f"[+] Logged in as: {user['username']}")
     log(f"[+] Current streak: {user['currentStreak']}, broken: {user['isStreakBroken']}")
-
-    # Step 3b: Try to switch from proxy to direct connection for room operations
-    # (proxies work for GET but THM WAF blocks POST through proxies)
-    if ACTIVE_PROXY:
-        log("[+] Testing direct connection for room operations...")
-        try:
-            ACTIVE_PROXY = None  # Try direct
-            test_user = get_user_info(session, csrf)
-            if test_user:
-                log("[+] Direct connection works for API calls! Switching to direct.")
-            else:
-                log("[!] Direct connection failed, staying on proxy.")
-                ACTIVE_PROXY = proxy_for_csrf
-        except Exception as e:
-            log(f"[!] Direct test failed: {e}, staying on proxy.")
-            ACTIVE_PROXY = proxy_for_csrf
 
     # Check if streak already maintained today (skip if --force-new)
     if not force_new and user["hasFirstAndLastAnswered"] and not user["isStreakBroken"]:
