@@ -189,9 +189,10 @@ def find_working_proxy(cookies):
         domain = host.lstrip(".")
         test_session.cookies.set(name, value, domain=domain, path=path)
 
-    for proxy in proxy_list[:30]:
+    for proxy in proxy_list[:50]:
         proxy_url = f"http://{proxy}"
         try:
+            # Test with GET CSRF first
             r = test_session.get(
                 "https://tryhackme.com/api/v2/auth/csrf",
                 headers={"Accept": "application/json"},
@@ -200,11 +201,29 @@ def find_working_proxy(cookies):
                 verify=False
             )
             ct = r.headers.get("content-type", "")
-            if "json" in ct:
-                d = r.json()
-                if d.get("status") == "success":
-                    log(f"[+] Found working proxy: {proxy}")
-                    return proxy_url
+            if "json" not in ct:
+                continue
+            d = r.json()
+            if d.get("status") != "success":
+                continue
+            csrf_token = d["data"]["token"]
+
+            # Now test POST join (some proxies work for GET but not POST)
+            r2 = test_session.post(
+                "https://tryhackme.com/api/v2/rooms/join",
+                headers={"Accept": "application/json", "Content-Type": "application/json",
+                         "csrf-token": csrf_token},
+                json={"roomCode": "blue"},
+                proxies={"https": proxy_url, "http": proxy_url},
+                timeout=10,
+                verify=False
+            )
+            d2 = r2.json()
+            if d2.get("status") == "success":
+                log(f"[+] Found working proxy (GET+POST): {proxy}")
+                return proxy_url
+            else:
+                log(f"[!] Proxy {proxy} works for GET but not POST: {d2.get('message','')[:40]}")
         except:
             continue
 
@@ -253,40 +272,56 @@ def get_proxy_dict():
     return None
 
 
+def _make_proxy_session():
+    """Create a session for proxy requests."""
+    from curl_cffi import requests as cffi_requests
+    return cffi_requests.Session(impersonate="chrome120")
+
+
+# Persistent proxy session (reused across all requests)
+_PROXY_SESSION = None
+
+
 def thm_get(session, url, headers=None, timeout=30):
     """Make a GET request to THM with optional proxy."""
+    global _PROXY_SESSION
     proxy = get_proxy_dict()
     if proxy:
-        # Use cloudscraper for proxy requests (curl_cffi impersonation triggers WAF)
-        import cloudscraper
-        s = cloudscraper.create_scraper()
-        # Copy cookies from main session
-        for c in session.cookies:
-            s.cookies.set(c.name, c.value, domain=c.domain, path=c.path)
+        if _PROXY_SESSION is None:
+            _PROXY_SESSION = _make_proxy_session()
+            for c in session.cookies:
+                _PROXY_SESSION.cookies.set(c.name, c.value, domain=c.domain, path=c.path)
         kwargs = {"headers": headers or {}, "timeout": timeout, "verify": False,
                   "proxies": proxy}
-        return s.get(url, **kwargs)
+        return _PROXY_SESSION.get(url, **kwargs)
     kwargs = {"headers": headers, "timeout": timeout}
     return session.get(url, **kwargs)
 
 
 def thm_post(session, url, headers=None, json_data=None, timeout=30):
     """Make a POST request to THM with optional proxy."""
+    global _PROXY_SESSION
     proxy = get_proxy_dict()
     if proxy:
-        import cloudscraper
-        s = cloudscraper.create_scraper()
-        for c in session.cookies:
-            s.cookies.set(c.name, c.value, domain=c.domain, path=c.path)
+        if _PROXY_SESSION is None:
+            _PROXY_SESSION = _make_proxy_session()
+            for c in session.cookies:
+                _PROXY_SESSION.cookies.set(c.name, c.value, domain=c.domain, path=c.path)
         kwargs = {"headers": headers or {}, "timeout": timeout, "verify": False,
                   "proxies": proxy}
         if json_data is not None:
             kwargs["json"] = json_data
-        return s.post(url, **kwargs)
+        return _PROXY_SESSION.post(url, **kwargs)
     kwargs = {"headers": headers, "timeout": timeout}
     if json_data is not None:
         kwargs["json"] = json_data
     return session.post(url, **kwargs)
+
+
+def reset_proxy_session():
+    """Reset the proxy session (call when proxy dies)."""
+    global _PROXY_SESSION
+    _PROXY_SESSION = None
 
 
 def get_user_info(session, csrf):
@@ -578,12 +613,28 @@ def main():
     solved_room = None
     rooms_failed = 0
 
+    consecutive_failures = 0
     for idx, code in enumerate(all_codes[:MAX_ROOMS_TO_CHECK]):
         thm_code = code_to_thm(code)
+
+        # Rotate proxy after 5 consecutive failures (proxy may have been blocked)
+        if consecutive_failures >= 5 and ACTIVE_PROXY:
+            log(f"  [!] Rotating proxy after {consecutive_failures} consecutive failures...")
+            reset_proxy_session()
+            new_proxy = find_working_proxy(cookies)
+            if new_proxy:
+                ACTIVE_PROXY = new_proxy
+                log(f"[+] Switched to new proxy: {new_proxy}")
+                # Re-login to get fresh CSRF
+                csrf = get_csrf(session)
+                consecutive_failures = 0
+            else:
+                log("[!] No new proxy found, continuing with current one")
 
         # Join room
         if not join_room(session, csrf, thm_code):
             rooms_failed += 1
+            consecutive_failures += 1
             if rooms_failed <= 3:
                 log(f"  [!] Failed to join {thm_code} (room {idx+1})")
             elif rooms_failed == 4:
@@ -594,9 +645,12 @@ def main():
         tasks = get_tasks(session, csrf, thm_code)
         if not tasks:
             rooms_failed += 1
+            consecutive_failures += 1
             if rooms_failed <= 3:
                 log(f"  [!] Failed to get tasks for {thm_code}")
             continue
+
+        consecutive_failures = 0  # Reset on success
 
         # Find unanswered questions
         unanswered = []
