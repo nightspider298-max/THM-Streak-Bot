@@ -149,7 +149,8 @@ def create_session(cookies):
 
 
 def find_working_proxy(cookies, exclude_proxy=None):
-    """Find a working HTTPS proxy that can reach THM API (GET+POST)."""
+    """Find a working HTTPS proxy that can reach THM API (GET+POST).
+    Returns (proxy_url, session) tuple so the working session can be reused."""
     from curl_cffi import requests as cffi_requests
 
     log("[+] Searching for working HTTPS proxy...")
@@ -181,19 +182,18 @@ def find_working_proxy(cookies, exclude_proxy=None):
 
     if not proxy_list:
         log("[!] No proxies available, will try direct connection")
-        return None
-
-    # Test proxies with a small session
-    test_session = cffi_requests.Session(impersonate="chrome120")
-    for name, value, host, path in cookies:
-        domain = host.lstrip(".")
-        test_session.cookies.set(name, value, domain=domain, path=path)
+        return None, None
 
     for proxy in proxy_list[:50]:
         proxy_url = f"http://{proxy}"
         if exclude_proxy and proxy_url == exclude_proxy:
             continue
         try:
+            # Create fresh session for each test AND reuse it if valid
+            test_session = cffi_requests.Session(impersonate="chrome120")
+            for name, value, host, path in cookies:
+                test_session.cookies.set(name, value, domain=host.lstrip("."), path=path)
+
             # Test with GET CSRF first
             r = test_session.get(
                 "https://tryhackme.com/api/v2/auth/csrf",
@@ -223,14 +223,15 @@ def find_working_proxy(cookies, exclude_proxy=None):
             d2 = r2.json()
             if d2.get("status") == "success":
                 log(f"[+] Found working proxy (GET+POST): {proxy}")
-                return proxy_url
+                # Return the working session so caller can reuse it immediately
+                return proxy_url, test_session
             else:
                 log(f"[!] Proxy {proxy} works for GET but not POST: {d2.get('message','')[:40]}")
         except:
             continue
 
     log("[!] No working proxy found, will try direct connection")
-    return None
+    return None, None
 
 
 def get_csrf(session):
@@ -537,9 +538,11 @@ def main():
             log(f"[+] Direct connection works, CSRF: {csrf_test[:20]}...")
         except Exception:
             log("[!] Direct connection blocked by Vercel, searching for proxy...")
-            proxy = find_working_proxy(cookies)
+            proxy, proxy_session = find_working_proxy(cookies)
             if proxy:
                 proxy_for_csrf = proxy
+                global _PROXY_SESSION
+                _PROXY_SESSION = proxy_session  # Reuse the validated session
                 log(f"[+] Using proxy for CSRF: {proxy}")
             else:
                 log("[!] No proxy found, will retry direct connection")
@@ -563,10 +566,11 @@ def main():
                 time.sleep(wait)
                 # Try finding a different proxy on retry
                 if attempt == 2 and not ACTIVE_PROXY:
-                    proxy = find_working_proxy(cookies)
+                    proxy, proxy_session = find_working_proxy(cookies)
                     if proxy:
                         proxy_for_csrf = proxy
                         ACTIVE_PROXY = proxy
+                        _PROXY_SESSION = proxy_session  # Reuse the validated session
                         log(f"[+] Switching to proxy: {proxy}")
                 session = create_session(cookies)
     
@@ -624,9 +628,10 @@ def main():
             log(f"  [!] Rotating proxy after {consecutive_failures} consecutive failures...")
             old_proxy = ACTIVE_PROXY
             reset_proxy_session()
-            new_proxy = find_working_proxy(cookies, exclude_proxy=old_proxy)
+            new_proxy, new_session = find_working_proxy(cookies, exclude_proxy=old_proxy)
             if new_proxy:
                 ACTIVE_PROXY = new_proxy
+                _PROXY_SESSION = new_session  # Reuse the validated session
                 log(f"[+] Switched to new proxy: {new_proxy}")
                 consecutive_failures = 0
             else:
