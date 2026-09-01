@@ -169,9 +169,17 @@ def trigger_streak_bot(force_new=False, complete_room=None, complete_random=Fals
     req.add_header("Accept", "application/vnd.github.v3+json")
     try:
         resp = urllib.request.urlopen(req)
+        print(f"[+] Workflow triggered successfully (status={resp.status})")
         return resp.status == 204
+    except urllib.error.HTTPError as e:
+        body = e.read().decode() if e.fp else ""
+        print(f"[!] Error triggering workflow: {e.code} {e.reason}")
+        print(f"[!] Response: {body[:200]}")
+        send_message(f"❌ Failed to trigger bot: HTTP {e.code}\n{body[:100]}")
+        return False
     except Exception as e:
         print(f"[!] Error triggering workflow: {e}")
+        send_message(f"❌ Failed to trigger bot: {e}")
         return False
 
 
@@ -185,7 +193,9 @@ def get_workflow_runs_active():
         resp = urllib.request.urlopen(req)
         data = json.loads(resp.read())
         for run in data.get("workflow_runs", []):
-            if run.get("name") == ".github/workflows/thmbot.yml":
+            name = run.get("name", "")
+            # Check for thmbot workflow by name or path
+            if "streak" in name.lower() or "thmbot" in name.lower():
                 return True
     except:
         pass
