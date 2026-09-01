@@ -593,26 +593,67 @@ def match_answer(question_text, hardcoded_pairs):
     """Try to match a THM question to a hardcoded answer."""
     q_clean = clean_question(question_text)
 
+    best_match = None
+    best_score = 0
+
     for hw_question, hw_answer in hardcoded_pairs:
         hw_clean = clean_question(hw_question)
 
-        # Exact match
+        # Exact match - highest priority
         if q_clean == hw_clean:
             return hw_answer
 
         # Containment match (question contains the pattern or vice versa)
         if hw_clean in q_clean or q_clean in hw_clean:
-            return hw_answer
+            # But only if the shorter string is at least 70% of the longer
+            ratio = min(len(hw_clean), len(q_clean)) / max(len(hw_clean), len(q_clean))
+            if ratio > 0.7:
+                return hw_answer
 
-        # Word overlap (>60% overlap)
+        # Word overlap scoring (more strict)
         q_words = set(q_clean.split())
         h_words = set(hw_clean.split())
         if q_words and h_words:
             overlap = len(q_words & h_words) / max(len(q_words), len(h_words))
-            if overlap > 0.6:
-                return hw_answer
+            # Require high overlap AND that questions aren't too different
+            # Check if there are unique distinguishing words
+            q_only = q_words - h_words
+            h_only = h_words - q_words
+            # If both have unique words, they're different questions
+            if q_only and h_only and overlap < 0.95:
+                continue
+            if overlap > best_score and overlap > 0.7:
+                best_score = overlap
+                best_match = hw_answer
 
-    return None
+    return best_match
+
+
+def fetch_writeup_for_room(room_slug):
+    """Fetch writeup answers from thmrevenant repo for a specific room."""
+    from curl_cffi import requests as cffi_requests
+    s = cffi_requests.Session(impersonate="chrome120")
+
+    url = f"https://raw.githubusercontent.com/thmrevenant/tryhackme/main/rooms/{room_slug}.txt"
+    r = s.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+    if r.status_code == 200 and r.text.strip():
+        # Parse into (question, answer) pairs
+        lines = []
+        for l in r.text.strip().split("\n"):
+            clean = re.sub(r'<[^>]+>', '', l).strip()
+            if clean and not clean.startswith("http"):
+                lines.append(clean)
+        if len(lines) >= 3:
+            pairs = []
+            i = 1  # skip room title
+            while i + 1 < len(lines):
+                q = lines[i]
+                a = lines[i + 1]
+                if q and a:
+                    pairs.append((q, a))
+                i += 2
+            return pairs
+    return []
 
 
 def main():
@@ -620,8 +661,23 @@ def main():
 
     force_new = "--force-new" in sys.argv
 
+    # Parse --complete <room>
+    complete_room = None
+    if "--complete" in sys.argv:
+        idx = sys.argv.index("--complete")
+        if idx + 1 < len(sys.argv):
+            complete_room = sys.argv[idx + 1].lower().strip()
+        else:
+            log("[!] --complete requires a room name, e.g. --complete blue")
+            sys.exit(1)
+
     log("=" * 60)
-    mode = "FORCE NEW CHALLENGE" if force_new else "Streak Maintenance"
+    if complete_room:
+        mode = f"COMPLETE ROOM: {complete_room}"
+    elif force_new:
+        mode = "FORCE NEW CHALLENGE"
+    else:
+        mode = "Streak Maintenance"
     log(f"THM Streak Bot v4.0 — {mode}")
     log(f"Run started at {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     log("=" * 60)
@@ -703,8 +759,8 @@ def main():
     log(f"[+] Logged in as: {user['username']}")
     log(f"[+] Current streak: {user['currentStreak']}, broken: {user['isStreakBroken']}")
 
-    # Check if streak already maintained today (skip if --force-new)
-    if not force_new and user["hasFirstAndLastAnswered"] and not user["isStreakBroken"]:
+    # Check if streak already maintained today (skip if --force-new or --complete)
+    if not force_new and not complete_room and user["hasFirstAndLastAnswered"] and not user["isStreakBroken"]:
         msg = (f"THM Bot: Streak already maintained today!\n"
                f"Streak: {user['currentStreak']}\n"
                f"Largest: {user['largestStreak']}")
@@ -712,7 +768,124 @@ def main():
         send_telegram(msg)
         return
 
-    # Step 4: Try hardcoded known rooms
+    # Step 4: --complete mode: solve ALL questions in a specific room
+    if complete_room:
+        log(f"[+] COMPLETING ROOM: {complete_room}")
+        rooms_attempted = 0
+        answers_submitted = 0
+        streak_increased = False
+        solved_room = None
+
+        # Find answers: check KNOWN_ROOMS first, then fetch writeup
+        hardcoded_answers = None
+        for slug, answers in KNOWN_ROOMS:
+            if slug == complete_room:
+                hardcoded_answers = answers
+                log(f"[+] Found {complete_room} in known rooms database ({len(answers)} Q&A pairs)")
+                break
+
+        if not hardcoded_answers:
+            log(f"[+] Fetching writeup for {complete_room} from GitHub...")
+            hardcoded_answers = fetch_writeup_for_room(complete_room)
+            if hardcoded_answers:
+                log(f"[+] Got {len(hardcoded_answers)} Q&A pairs from writeup")
+            else:
+                log(f"[!] No writeup found for {complete_room}")
+                send_telegram(f"THM Bot: No writeup found for room '{complete_room}'")
+                sys.exit(1)
+
+        # Join room
+        if not join_room(session, csrf, complete_room):
+            log(f"[!] Failed to join {complete_room}")
+            send_telegram(f"THM Bot: Failed to join room '{complete_room}'")
+            sys.exit(1)
+
+        time.sleep(1)
+
+        # Get tasks
+        tasks = get_tasks(session, csrf, complete_room)
+        if not tasks:
+            log(f"[!] Failed to get tasks for {complete_room}")
+            send_telegram(f"THM Bot: Failed to get tasks for '{complete_room}'")
+            sys.exit(1)
+
+        log(f"[+] Got {len(tasks)} tasks for {complete_room}")
+
+        # Find ALL unanswered questions
+        unanswered = []
+        for task in tasks:
+            task_id = task.get("_id")
+            for q in task.get("questions", []):
+                progress = q.get("progress", {})
+                if progress.get("noAnswer") or progress.get("correct"):
+                    continue
+                unanswered.append({
+                    "task_id": task_id,
+                    "question_no": q.get("questionNo"),
+                    "question": q.get("question", ""),
+                    "task_no": task.get("taskNo"),
+                })
+
+        if not unanswered:
+            log(f"[!] No unanswered questions in {complete_room} (already complete!)")
+            send_telegram(f"THM Bot: Room '{complete_room}' is already fully complete!")
+            return
+
+        log(f"[+] {len(unanswered)} unanswered questions to solve in {complete_room}")
+
+        # Submit ALL answers (don't break after first correct)
+        for uq in unanswered:
+            answer = match_answer(uq["question"], hardcoded_answers)
+            if not answer:
+                log(f"    [?] Task {uq['task_no']} Q{uq['question_no']}: No matching answer for '{uq['question'][:50]}'")
+                continue
+
+            log(f"    [+] Task {uq['task_no']} Q{uq['question_no']}: Submitting '{answer[:60]}'")
+
+            result = submit_answer(session, csrf, uq["task_id"], uq["question_no"], answer, complete_room)
+            data = result.get("data", {})
+
+            if data.get("isCorrect"):
+                log(f"      [+] CORRECT! Score: +{data.get('scoreAwarded', 0)}")
+                answers_submitted += 1
+                solved_room = complete_room
+
+                if data.get("isStreakIncreased"):
+                    log(f"      [+] STREAK INCREASED! New: {data.get('currentStreak')}")
+                    streak_increased = True
+            else:
+                msg = result.get("message", "unknown error")
+                log(f"      [!] Wrong or error: {msg}")
+                if "too fast" in str(msg).lower():
+                    log(f"      [!] Rate limited, waiting 30s...")
+                    time.sleep(30)
+
+            time.sleep(5)  # Delay between submissions (avoid rate limit)
+
+        # Final status for --complete mode
+        final_user = get_user_info(session, csrf)
+        log("=" * 60)
+        log("COMPLETE ROOM STATUS:")
+        if final_user:
+            log(f"  Username: {final_user['username']}")
+            log(f"  Current Streak: {final_user['currentStreak']}")
+            log(f"  Total Points: {final_user['totalPoints']}")
+        log(f"  Room: {complete_room}")
+        log(f"  Answers Submitted: {answers_submitted}/{len(unanswered)}")
+        log(f"  Streak Increased: {streak_increased}")
+        log("=" * 60)
+
+        status_emoji = "SUCCESS" if answers_submitted > 0 else "FAILED"
+        msg = (f"THM Bot - Room Complete {status_emoji}\n"
+               f"Room: {complete_room}\n"
+               f"Answers: {answers_submitted}/{len(unanswered)}\n"
+               f"Streak increased: {streak_increased}")
+        if final_user:
+            msg += f"\nStreak: {final_user['currentStreak']} | Points: {final_user['totalPoints']}"
+        send_telegram(msg)
+        return
+
+    # Step 4b: Normal/force-new mode - try hardcoded known rooms
     log(f"[+] Trying {len(KNOWN_ROOMS)} known rooms...")
     rooms_attempted = 0
     answers_submitted = 0

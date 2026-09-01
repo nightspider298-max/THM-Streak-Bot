@@ -150,12 +150,17 @@ def handle_logs_command():
         send_message("📄 No log content available.")
 
 
-def trigger_streak_bot(force_new=False):
+def trigger_streak_bot(force_new=False, complete_room=None):
     """Trigger the streak bot workflow via GitHub API."""
     url = f"{GH_API}/repos/{REPO}/actions/workflows/thmbot.yml/dispatches"
     payload = {"ref": "main"}
+    inputs = {}
     if force_new:
-        payload["inputs"] = {"force_new": "true"}
+        inputs["force_new"] = "true"
+    if complete_room:
+        inputs["complete_room"] = complete_room
+    if inputs:
+        payload["inputs"] = inputs
     data = json.dumps(payload).encode()
     req = urllib.request.Request(url, data=data, method="POST")
     req.add_header("Authorization", f"token {GH_TOKEN}")
@@ -219,6 +224,28 @@ def handle_new_command():
         send_message("❌ Failed to trigger. Check GitHub Actions.")
 
 
+def handle_complete_command(room_name):
+    """Handle /complete <room> command - solve ALL questions in a room."""
+    send_chat_action("typing")
+    
+    if not room_name:
+        send_message("Usage: `/complete <room-name>`\nExample: `/complete blue`")
+        return
+    
+    # Check if already running
+    if get_workflow_runs_active():
+        send_message("⚠️ Streak bot is already running! Wait for it to finish.")
+        return
+    
+    room_slug = room_name.lower().strip().replace(" ", "-")
+    send_message(f"Completing room: *{room_slug}*\n\nSolving ALL questions. This may take a few minutes.")
+    
+    if trigger_streak_bot(complete_room=room_slug):
+        print(f"[+] Complete room triggered: {room_slug}")
+    else:
+        send_message("❌ Failed to trigger. Check GitHub Actions.")
+
+
 def handle_start_command():
     """Handle /start command."""
     send_message(
@@ -226,6 +253,7 @@ def handle_start_command():
         "Commands:\n"
         "/now — Run streak bot (maintain streak)\n"
         "/new — Solve a brand NEW challenge\n"
+        "/complete <room> — Solve ALL questions in a room\n"
         "/logs — Get latest run logs\n"
         "/status — Check bot status\n"
         "/help — Show this help"
@@ -273,6 +301,11 @@ def main():
                     handle_now_command()
                 elif text == "/new":
                     handle_new_command()
+                elif text.startswith("/complete"):
+                    # Extract room name after /complete
+                    parts = text.split(maxsplit=1)
+                    room = parts[1] if len(parts) > 1 else ""
+                    handle_complete_command(room)
                 elif text == "/start":
                     handle_start_command()
                 elif text == "/status":

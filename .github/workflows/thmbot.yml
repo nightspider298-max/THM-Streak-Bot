@@ -14,6 +14,10 @@ on:
         options:
           - 'false'
           - 'true'
+      complete_room:
+        description: 'Room name to complete ALL questions (e.g. blue, ice, kenobi)'
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -43,12 +47,16 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           FORCE_NEW: ${{ inputs.force_new || 'false' }}
+          COMPLETE_ROOM: ${{ inputs.complete_room || '' }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           # Wait 60s for Vercel rate limit cooldown on GitHub Actions IPs
           echo "Waiting 60s for rate limit cooldown..."
           sleep 60
-          if [ "$FORCE_NEW" = "true" ]; then
+          if [ -n "$COMPLETE_ROOM" ]; then
+            echo "Complete room mode: solving all questions in $COMPLETE_ROOM"
+            timeout 10m python main.py --complete "$COMPLETE_ROOM"
+          elif [ "$FORCE_NEW" = "true" ]; then
             echo "Force new mode: will solve a new challenge"
             timeout 10m python main.py --force-new
           else
