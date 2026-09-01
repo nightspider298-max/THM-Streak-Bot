@@ -486,24 +486,53 @@ def submit_answer(session, csrf, task_id, question_no, answer, room_code):
 
 def fetch_room_codes():
     """Fetch room codes from writeup repo."""
-    from curl_cffi import requests as cffi_requests
-    s = cffi_requests.Session(impersonate="chrome120")
+    import requests as req_lib
 
-    r = s.get("https://api.github.com/repos/thmrevenant/tryhackme/git/trees/main?recursive=1",
-              headers={"Accept": "application/json", "User-Agent": "Mozilla/5.0"})
-    if r.status_code != 200:
+    urls = [
+        "https://api.github.com/repos/thmrevenant/tryhackme/git/trees/main?recursive=1",
+        "https://raw.githubusercontent.com/thmrevenant/tryhackme/main/rooms/",
+    ]
+
+    # Try with requests library (more reliable on GHA)
+    try:
+        r = req_lib.get(
+            urls[0],
+            headers={"Accept": "application/json", "User-Agent": "Mozilla/5.0"},
+            timeout=15
+        )
+        if r.status_code == 200:
+            tree = r.json().get("tree", [])
+            codes = set()
+            for item in tree:
+                path = item.get("path", "")
+                if path.startswith("rooms/") and path.endswith(".txt"):
+                    code = path.replace("rooms/", "").replace(".txt", "")
+                    codes.add(code)
+            return sorted(codes)
         log(f"[!] Failed to fetch repo tree: {r.status_code}")
-        return []
+    except Exception as e:
+        log(f"[!] Failed to fetch repo tree: {e}")
 
-    tree = r.json().get("tree", [])
-    codes = set()
-    for item in tree:
-        path = item.get("path", "")
-        if path.startswith("rooms/") and path.endswith(".txt"):
-            code = path.replace("rooms/", "").replace(".txt", "")
-            codes.add(code)
+    # Fallback: try with curl_cffi
+    try:
+        from curl_cffi import requests as cffi_requests
+        s = cffi_requests.Session(impersonate="chrome120")
+        r = s.get(urls[0],
+                  headers={"Accept": "application/json", "User-Agent": "Mozilla/5.0"},
+                  timeout=15, verify=False)
+        if r.status_code == 200:
+            tree = r.json().get("tree", [])
+            codes = set()
+            for item in tree:
+                path = item.get("path", "")
+                if path.startswith("rooms/") and path.endswith(".txt"):
+                    code = path.replace("rooms/", "").replace(".txt", "")
+                    codes.add(code)
+            return sorted(codes)
+    except Exception as e:
+        log(f"[!] Fallback also failed: {e}")
 
-    return sorted(codes)
+    return []
 
 
 def main():
