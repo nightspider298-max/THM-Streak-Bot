@@ -487,19 +487,18 @@ def submit_answer(session, csrf, task_id, question_no, answer, room_code):
 def fetch_room_codes():
     """Fetch room codes from writeup repo."""
     import requests as req_lib
+    import os
 
-    urls = [
-        "https://api.github.com/repos/thmrevenant/tryhackme/git/trees/main?recursive=1",
-        "https://raw.githubusercontent.com/thmrevenant/tryhackme/main/rooms/",
-    ]
+    url = "https://api.github.com/repos/thmrevenant/tryhackme/git/trees/main?recursive=1"
+    headers = {"Accept": "application/json", "User-Agent": "Mozilla/5.0"}
 
-    # Try with requests library (more reliable on GHA)
+    # Use GITHUB_TOKEN if available (avoids rate limiting on GHA)
+    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    if token:
+        headers["Authorization"] = f"token {token}"
+
     try:
-        r = req_lib.get(
-            urls[0],
-            headers={"Accept": "application/json", "User-Agent": "Mozilla/5.0"},
-            timeout=15
-        )
+        r = req_lib.get(url, headers=headers, timeout=15)
         if r.status_code == 200:
             tree = r.json().get("tree", [])
             codes = set()
@@ -513,15 +512,11 @@ def fetch_room_codes():
     except Exception as e:
         log(f"[!] Failed to fetch repo tree: {e}")
 
-    # Fallback: try with curl_cffi
+    # Fallback: try without auth
     try:
-        from curl_cffi import requests as cffi_requests
-        s = cffi_requests.Session(impersonate="chrome120")
-        r = s.get(urls[0],
-                  headers={"Accept": "application/json", "User-Agent": "Mozilla/5.0"},
-                  timeout=15, verify=False)
-        if r.status_code == 200:
-            tree = r.json().get("tree", [])
+        r2 = req_lib.get(url, headers={"Accept": "application/json", "User-Agent": "Mozilla/5.0"}, timeout=15)
+        if r2.status_code == 200:
+            tree = r2.json().get("tree", [])
             codes = set()
             for item in tree:
                 path = item.get("path", "")
