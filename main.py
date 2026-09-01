@@ -148,8 +148,8 @@ def create_session(cookies):
     return session
 
 
-def find_working_proxy(cookies):
-    """Find a working HTTPS proxy that can reach THM API."""
+def find_working_proxy(cookies, exclude_proxy=None):
+    """Find a working HTTPS proxy that can reach THM API (GET+POST)."""
     from curl_cffi import requests as cffi_requests
 
     log("[+] Searching for working HTTPS proxy...")
@@ -191,6 +191,8 @@ def find_working_proxy(cookies):
 
     for proxy in proxy_list[:50]:
         proxy_url = f"http://{proxy}"
+        if exclude_proxy and proxy_url == exclude_proxy:
+            continue
         try:
             # Test with GET CSRF first
             r = test_session.get(
@@ -620,13 +622,12 @@ def main():
         # Rotate proxy after 5 consecutive failures (proxy may have been blocked)
         if consecutive_failures >= 5 and ACTIVE_PROXY:
             log(f"  [!] Rotating proxy after {consecutive_failures} consecutive failures...")
+            old_proxy = ACTIVE_PROXY
             reset_proxy_session()
-            new_proxy = find_working_proxy(cookies)
+            new_proxy = find_working_proxy(cookies, exclude_proxy=old_proxy)
             if new_proxy:
                 ACTIVE_PROXY = new_proxy
                 log(f"[+] Switched to new proxy: {new_proxy}")
-                # Re-login to get fresh CSRF
-                csrf = get_csrf(session)
                 consecutive_failures = 0
             else:
                 log("[!] No new proxy found, continuing with current one")
