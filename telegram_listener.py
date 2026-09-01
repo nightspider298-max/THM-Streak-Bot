@@ -150,7 +150,7 @@ def handle_logs_command():
         send_message("📄 No log content available.")
 
 
-def trigger_streak_bot(force_new=False, complete_room=None):
+def trigger_streak_bot(force_new=False, complete_room=None, complete_random=False):
     """Trigger the streak bot workflow via GitHub API."""
     url = f"{GH_API}/repos/{REPO}/actions/workflows/thmbot.yml/dispatches"
     payload = {"ref": "main"}
@@ -159,6 +159,8 @@ def trigger_streak_bot(force_new=False, complete_room=None):
         inputs["force_new"] = "true"
     if complete_room:
         inputs["complete_room"] = complete_room
+    if complete_random:
+        inputs["complete_random"] = "true"
     if inputs:
         payload["inputs"] = inputs
     data = json.dumps(payload).encode()
@@ -225,25 +227,28 @@ def handle_new_command():
 
 
 def handle_complete_command(room_name):
-    """Handle /complete <room> command - solve ALL questions in a room."""
+    """Handle /complete [room] command - solve ALL questions in a room.
+    If no room specified, picks a random uncompleted room."""
     send_chat_action("typing")
-    
-    if not room_name:
-        send_message("Usage: `/complete <room-name>`\nExample: `/complete blue`")
-        return
     
     # Check if already running
     if get_workflow_runs_active():
         send_message("⚠️ Streak bot is already running! Wait for it to finish.")
         return
     
-    room_slug = room_name.lower().strip().replace(" ", "-")
-    send_message(f"Completing room: *{room_slug}*\n\nSolving ALL questions. This may take a few minutes.")
-    
-    if trigger_streak_bot(complete_room=room_slug):
-        print(f"[+] Complete room triggered: {room_slug}")
+    if room_name:
+        room_slug = room_name.lower().strip().replace(" ", "-")
+        send_message(f"Completing room: *{room_slug}*\n\nSolving ALL questions. This may take a few minutes.")
+        if trigger_streak_bot(complete_room=room_slug):
+            print(f"[+] Complete room triggered: {room_slug}")
+        else:
+            send_message("❌ Failed to trigger. Check GitHub Actions.")
     else:
-        send_message("❌ Failed to trigger. Check GitHub Actions.")
+        send_message("🎲 *Random room mode*\n\nPicking a random uncompleted room and solving ALL questions.")
+        if trigger_streak_bot(complete_random=True):
+            print("[+] Complete random triggered")
+        else:
+            send_message("❌ Failed to trigger. Check GitHub Actions.")
 
 
 def handle_start_command():
@@ -253,7 +258,8 @@ def handle_start_command():
         "Commands:\n"
         "/now — Run streak bot (maintain streak)\n"
         "/new — Solve a brand NEW challenge\n"
-        "/complete <room> — Solve ALL questions in a room\n"
+        "/complete — Solve ALL questions in a random uncompleted room\n"
+        "/complete <room> — Solve ALL questions in a specific room\n"
         "/logs — Get latest run logs\n"
         "/status — Check bot status\n"
         "/help — Show this help"
