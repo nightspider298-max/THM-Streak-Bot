@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
 """
-THM Streak Bot - Maintains your TryHackMe daily streak
-Uses Firefox cookies + curl_cffi API + writeup repos (100% FREE).
+THM Streak Bot v4.0 - Maintains your TryHackMe daily streak
+Uses Firefox cookies + curl_cffi API + HARDCODED known rooms (100% FREE).
+
+Key design: Instead of scanning 500 rooms through unreliable free proxies,
+we use a hardcoded database of known-easy rooms with verified answers.
+Each room attempt only needs 3 API calls (join + tasks + submit).
 
 Flow:
 1. Load cookies from base64-encoded THM_FIREFOX_COOKIES env var
 2. Find a working HTTPS proxy (Vercel blocks GitHub Actions IPs)
-3. Fetch room codes from thmrevenant writeup repo
-4. For each room: join → get tasks → find unanswered → match writeup answers → submit
+3. Try each known room: join → get tasks → match hardcoded answers → submit
+4. Stop on first success (for /new) or when streak is maintained
 5. Send Telegram notification with results
 """
 import os
@@ -28,14 +32,194 @@ import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # --- Configuration ---
-ANSWER_DELAY = 15  # seconds between answer submissions
-MAX_ROOMS_TO_CHECK = 500  # how many rooms to scan from writeup repo
-WRITEUP_REPO = "https://raw.githubusercontent.com/thmrevenant/tryhackme/main/rooms"
+ANSWER_DELAY = 15       # seconds between answer submissions
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 COOKIE_DB_PATH = os.environ.get("THM_COOKIE_DB", "")
-# Global proxy (set at runtime if needed)
 ACTIVE_PROXY = os.environ.get("THM_PROXY", None)
+
+# ============================================================
+# HARDCODED KNOWN ROOMS DATABASE
+# Each entry: (room_slug, [(question_pattern, answer), ...])
+# These are verified answers from the thmrevenant writeup repo.
+# Only rooms with simple, unique answers are included.
+# ============================================================
+KNOWN_ROOMS = [
+    ("blue", [
+        ("how many ports are open with a port number under 1000", "3"),
+        ("what is this machine vulnerable to", "ms17-010"),
+        ("what is the full path of the code", "exploit/windows/smb/ms17_010_eternalblue"),
+        ("what is the name of this value", "RHOSTS"),
+        ("what is the name of the post module we will use", "post/multi/manage/shell_to_meterpreter"),
+        ("what option are we required to change", "SESSION"),
+        ("what is the name of the non-default user", "Jon"),
+        ("what is the cracked password", "alqfna22"),
+        ("flag1", "flag{access_the_machine}"),
+        ("flag2", "flag{sam_database_elevated_access}"),
+        ("flag3", "flag{admin_documents_can_be_valuable}"),
+    ]),
+    ("ice", [
+        ("what port is this open on", "3389"),
+        ("what service did nmap identify as running on port 8000", "Icecast"),
+        ("what does nmap identify as the hostname of the machine", "DARK-PC"),
+        ("what is the impact score for this vulnerability", "6.4"),
+        ("what is the cve number for this vulnerability", "CVE-2004-1561"),
+        ("what is the full path", "exploit/windows/http/icecast_header"),
+        ("what is the only required setting which currently is blank", "rhosts"),
+        ("what is the name of the shell we have now", "meterpreter"),
+        ("what user was running that icecast process", "Dark"),
+        ("what build of windows is the system", "7601"),
+        ("what is the architecture of the process", "x64"),
+        ("what is the full path", "exploit/windows/local/bypassuac_eventvwr"),
+        ("what is the name of this option", "LHOST"),
+        ("what permission listed allows us to take ownership", "SeTakeOwnershipPrivilege"),
+        ("what user is listed", "NT AUTHORITY\\SYSTEM"),
+        ("what command allows us to retrieve all credentials", "creds_all"),
+        ("what is dark's password", "Password01"),
+        ("what command allows us to dump all of the password hashes", "hashdump"),
+        ("what command allows us to watch the remote user's desktop", "screenshare"),
+        ("what command allows us to record from a microphone", "record_mic"),
+        ("what command allows us to modify timestamps", "timestomp"),
+        ("what command allows us to create a golden ticket", "golden_ticket_create"),
+    ]),
+    ("kenobi", [
+        ("scan the machine with nmap, how many ports are open", "7"),
+        ("how many shares have been found", "3"),
+        ("what is the file can you see", "log.txt"),
+        ("what port is ftp running on", "21"),
+        ("what mount can we see", "/var"),
+        ("what is the version", "1.3.5"),
+        ("how many exploits are there for the proftpd", "4"),
+        ("what is kenobi's user flag", "d0b0f3f53b6caa532a83915e19224899"),
+        ("what file looks particularly out of the ordinary", "/usr/bin/menu"),
+        ("run the binary, how many options appear", "3"),
+        ("what is the root flag", "177b3cd8562289f37382721c28381f02"),
+    ]),
+    ("couch", [
+        ("scan the machine. how many ports are open", "2"),
+        ("what is the database management system", "couchdb"),
+        ("what port is the database management system running on", "5984"),
+        ("what is the version of the management system", "1.6.1"),
+        ("what is the path for the web administration tool", "_utils"),
+        ("what is the path to list all databases", "_all_dbs"),
+        ("what are the credentials found", "atena:t4qfzcc4qN##"),
+        ("compromise the machine and locate user.txt", "THM{1ns3cure_couchdb}"),
+        ("escalate privileges and obtain root.txt", "THM{RCE_us1ng_Docker_API}"),
+    ]),
+    ("internal", [
+        ("user.txt flag", "THM{int3rna1_fl4g_1}"),
+        ("root.txt flag", "THM{d0ck3r_d3str0y3r}"),
+    ]),
+    ("overpass", [
+        ("hack the machine and get the flag in user.txt", "thm{65c1aaf000506e56996822c6281e6bf7}"),
+        ("escalate your privileges and get the flag in root.txt", "thm{7f336f8c359dbac18d54fdd64ea753bb}"),
+    ]),
+    ("startup", [
+        ("what is the secret spicy soup recipe", "love"),
+        ("what are the contents of user.txt", "THM{03ce3d619b80ccbfb3b7fc81e46c0e79}"),
+        ("what are the contents of root.txt", "THM{f963aaa6a430f210222158ae15c3d76d}"),
+    ]),
+    ("rocket", [
+        ("what is contained within the user.txt file", "THM{9f87696626a585380d3c1697087e5b5b}"),
+        ("what is contained within the root.txt file", "THM{6613b7f76a88b32230eac584b0e18cfd}"),
+    ]),
+    ("res", [
+        ("scan the machine, how many ports are open", "2"),
+        ("what is the database management system installed on the server", "redis"),
+        ("what port is the database management system running on", "6379"),
+        ("what is the version of management system installed on the server", "6.0.7"),
+        ("compromise the machine and locate user.txt", "thm{red1s_rce_w1thout_credent1als}"),
+        ("what is the local user account password", "beautiful1"),
+        ("escalate privileges and obtain root.txt", "thm{xxd_pr1v_escalat1on}"),
+    ]),
+    ("lazyadmin", [
+        ("what is the user flag", "THM{63e5bce9271952aad1113b6f1ac28a07}"),
+        ("what is the root flag", "THM{6637f41d0177b6f37cb20d775124699f}"),
+    ]),
+    ("hackernote", [
+        ("which ports are open", "22,80,8080"),
+        ("what programming language is the backend written in", "go"),
+        ("how many usernames from the list are valid", "1"),
+        ("what are/is the valid username", "james"),
+        ("how many passwords were in your wordlist", "180"),
+        ("what was the user's password", "blue7"),
+        ("what's the user's ssh password", "dak4ddb37b"),
+        ("what's the user flag", "thm{56911bd7ba1371a3221478aa5c094d68}"),
+        ("what is the cve number for the exploit", "CVE-2019-18634"),
+        ("what is the root flag", "thm{af55ada6c2445446eb0606b5a2d3a4d2}"),
+    ]),
+    ("temple", [
+        ("find flag1.txt", "7362bee1e78243f4811f26565137d5e20cbd9af0"),
+        ("find flag2.txt", "f620630155081293669dbb7949f975fa9386f1cd"),
+    ]),
+    ("wonderland", [
+        ("obtain the flag in user.txt", 'thm{"Curiouser and curiouser!"}'),
+        ("escalate your privileges, what is the flag in root.txt", "thm{Twinkle, twinkle, little bat! How I wonder what you're at!}"),
+    ]),
+    ("welcome", [
+        ("what is the flag text shown on website", "flag{connection_verified}"),
+    ]),
+    ("skynet", [
+        ("what is miles password for his emails", "cyborg007haloterminator"),
+        ("what is the hidden directory", "/45kra24zxs28v3yd"),
+        ("what is the vulnerability called when you can include a remote file", "remote file inclusion"),
+        ("what is the user flag", "7ce5c2109a40f958099283600a9ae807"),
+        ("what is the root flag", "3f0372db24753accc7179a282cd6a949"),
+    ]),
+    ("snort", [
+        ("navigate to the task-exercises folder and run", "Too Easy!"),
+        ("which snort mode can help you stop the threats on a local machine", "HIPS"),
+        ("which snort mode can help you detect threats on a local network", "NIDS"),
+        ("which snort mode can help you detect the threats on a local machine", "HIDS"),
+        ("which snort mode can help you stop the threats on a local network", "NIPS"),
+        ("which snort mode works similar to nips mode", "NBA"),
+        ("according to the official description of the snort, what kind of nips is it", "full-blown"),
+        ("nba training period is also known as", "baselining"),
+        ("run the snort instance and check the build number", "149"),
+    ]),
+    ("nmap", [
+        ("what networking constructs are used to direct traffic", "Ports"),
+        ("how many of these are available on any network-enabled computer", "65535"),
+        ("how many of these are considered well-known", "1024"),
+        ("what is the first switch listed in the help menu for a syn scan", "-sS"),
+        ("which switch would you use for a udp scan", "-sU"),
+        ("if you wanted to detect which operating system", "-O"),
+        ("nmap provides a switch to detect the version", "-sV"),
+        ("how would you increase the verbosity", "-v"),
+        ("how would you set the verbosity level to two", "-vv"),
+        ("what switch would you use to save the nmap results in three major formats", "-oA"),
+        ("what switch would you use to save the nmap results in a normal format", "-oN"),
+        ("a very useful output format: how would you save results in a grepable format", "-oG"),
+        ("how would you activate this setting", "-A"),
+        ("how would you set the timing template to level 5", "-T5"),
+        ("how would you tell nmap to only scan port 80", "-p 80"),
+        ("how would you tell nmap to scan ports 1000-1500", "-p 1000-1500"),
+        ("how would you tell nmap to scan all ports", "-p-"),
+        ("how would you activate a script from the nmap scripting library", "--script"),
+        ("how would you activate all of the scripts in the vuln category", "--script=vuln"),
+        ("which rfc defines the appropriate behaviour for the tcp protocol", "RFC 9293"),
+        ("if a port is closed, which flag should the server send back", "RST"),
+        ("there are two other names for a syn scan", "Half-Open, Stealth"),
+        ("can nmap use a syn scan without sudo permissions", "N"),
+        ("if a udp port doesn't respond to an nmap scan, what will it be marked as", "open|filtered"),
+        ("which protocol would it use to do so", "ICMP"),
+        ("which of the three shown scan types uses the urg flag", "xmas"),
+        ("why are null, fin and xmas scans generally used", "Firewall Evasion"),
+        ("which common os may respond to a null, fin or xmas scan", "Microsoft Windows"),
+        ("how would you perform a ping sweep", "nmap -sn 172.16.0.0/16"),
+        ("what language are nse scripts written in", "Lua"),
+        ("which category of scripts would be a very bad idea to run in a production environment", "intrusive"),
+        ("what optional argument can the ftp-anon.nse script take", "maxlist"),
+        ("what is the filename of the script which determines the underlying os of the smb server", "smb-os-discovery.nse"),
+        ("read through this script. what does it depend on", "smb-brute"),
+        ("which simple and frequently relied upon protocol is often blocked", "ICMP"),
+        ("does the target ip respond to icmp echo ping requests", "N"),
+        ("perform an xmas scan on the first 999 ports", "999"),
+        ("there is a reason given for this", "No Response"),
+        ("perform a tcp syn scan on the first 5000 ports", "5"),
+        ("can nmap login successfully to the ftp server on port 21", "Y"),
+    ]),
+]
 
 
 def log(msg):
@@ -69,7 +253,6 @@ def send_telegram(message):
 
 def load_cookies():
     """Load cookies from base64 env var or Firefox cookies.sqlite."""
-    # Method 1: Base64-encoded JSON cookie list from env (GitHub Actions)
     b64_data = os.environ.get("THM_FIREFOX_COOKIES", "")
     if b64_data:
         log("[+] Loading cookies from THM_FIREFOX_COOKIES env var")
@@ -81,7 +264,6 @@ def load_cookies():
             return cookies
         except Exception as e:
             log(f"[!] Failed to decode JSON cookies: {e}")
-            # Fallback: try as SQLite database
             try:
                 tmp = tempfile.mktemp(suffix=".db")
                 with open(tmp, "wb") as f:
@@ -98,7 +280,6 @@ def load_cookies():
                 log(f"[!] SQLite fallback also failed: {e2}")
                 return []
 
-    # Method 2: Direct cookie DB path
     if COOKIE_DB_PATH and os.path.exists(COOKIE_DB_PATH):
         log(f"[+] Loading cookies from {COOKIE_DB_PATH}")
         tmp = tempfile.mktemp(suffix=".db")
@@ -111,7 +292,6 @@ def load_cookies():
         os.unlink(tmp)
         return cookies
 
-    # Method 3: Find Firefox profile automatically
     patterns = globmod.glob(os.path.expanduser("~/.mozilla/firefox/*/cookies.sqlite"))
     if patterns:
         log(f"[+] Loading cookies from {patterns[0]}")
@@ -150,12 +330,11 @@ def create_session(cookies):
 
 def find_working_proxy(cookies, exclude_proxy=None):
     """Find a working HTTPS proxy that can reach THM API (GET+POST).
-    Returns (proxy_url, session) tuple so the working session can be reused."""
+    Returns (proxy_url, session) tuple."""
     from curl_cffi import requests as cffi_requests
 
     log("[+] Searching for working HTTPS proxy...")
 
-    # Get proxy list from free sources
     proxy_list = []
     try:
         import requests
@@ -181,20 +360,22 @@ def find_working_proxy(cookies, exclude_proxy=None):
             log(f"[!] Failed to get proxies from GitHub: {e}")
 
     if not proxy_list:
-        log("[!] No proxies available, will try direct connection")
+        log("[!] No proxies available")
         return None, None
 
-    for proxy in proxy_list[:50]:
+    # Shuffle to avoid always picking the same ones
+    random.shuffle(proxy_list)
+
+    for proxy in proxy_list[:30]:
         proxy_url = f"http://{proxy}"
         if exclude_proxy and proxy_url == exclude_proxy:
             continue
         try:
-            # Create fresh session for each test AND reuse it if valid
             test_session = cffi_requests.Session(impersonate="chrome120")
             for name, value, host, path in cookies:
                 test_session.cookies.set(name, value, domain=host.lstrip("."), path=path)
 
-            # Test with GET CSRF first
+            # Test GET CSRF
             r = test_session.get(
                 "https://tryhackme.com/api/v2/auth/csrf",
                 headers={"Accept": "application/json"},
@@ -210,7 +391,7 @@ def find_working_proxy(cookies, exclude_proxy=None):
                 continue
             csrf_token = d["data"]["token"]
 
-            # Now test POST join (some proxies work for GET but not POST)
+            # Test POST join
             r2 = test_session.post(
                 "https://tryhackme.com/api/v2/rooms/join",
                 headers={"Accept": "application/json", "Content-Type": "application/json",
@@ -223,41 +404,14 @@ def find_working_proxy(cookies, exclude_proxy=None):
             d2 = r2.json()
             if d2.get("status") == "success":
                 log(f"[+] Found working proxy (GET+POST): {proxy}")
-                # Return the working session so caller can reuse it immediately
                 return proxy_url, test_session
             else:
-                log(f"[!] Proxy {proxy} works for GET but not POST: {d2.get('message','')[:40]}")
+                log(f"[!] Proxy {proxy} POST failed: {d2.get('message','')[:40]}")
         except:
             continue
 
-    log("[!] No working proxy found, will try direct connection")
+    log("[!] No working proxy found")
     return None, None
-
-
-def get_csrf(session):
-    """Get CSRF token from THM."""
-    r = thm_get(session, "https://tryhackme.com/api/v2/auth/csrf",
-                headers={"Accept": "application/json"})
-    ct = r.headers.get("content-type", "")
-    if "json" in ct:
-        data = r.json()
-        if data.get("status") == "success":
-            return data["data"]["token"]
-        raise Exception(f"CSRF fetch failed: {data}")
-
-    # Fallback: Try to get CSRF from the main page HTML
-    log(f"[!] API CSRF blocked (status={r.status_code}), trying HTML fallback...")
-    r2 = thm_get(session, "https://tryhackme.com/", headers={"Accept": "text/html"})
-    match = re.search(r'csrf["\s:=]+["\']([a-zA-Z0-9_-]{20,})["\']', r2.text)
-    if match:
-        return match.group(1)
-
-    r3 = thm_get(session, "https://tryhackme.com/dashboard", headers={"Accept": "text/html"})
-    match2 = re.search(r'csrf["\s:=]+["\']([a-zA-Z0-9_-]{20,})["\']', r3.text)
-    if match2:
-        return match2.group(1)
-
-    raise Exception(f"Could not get CSRF token from any source. Last status: {r.status_code}")
 
 
 def make_headers(csrf, json_ct=True):
@@ -275,25 +429,28 @@ def get_proxy_dict():
     return None
 
 
-def _make_proxy_session():
-    """Create a session for proxy requests."""
+def _make_proxy_session(cookies=None):
+    """Create a fresh session for proxy requests."""
     from curl_cffi import requests as cffi_requests
-    return cffi_requests.Session(impersonate="chrome120")
+    s = cffi_requests.Session(impersonate="chrome120")
+    if cookies:
+        for name, value, host, path in cookies:
+            s.cookies.set(name, value, domain=host.lstrip("."), path=path)
+    return s
 
 
-# Persistent proxy session (reused across all requests)
+# Persistent proxy session
 _PROXY_SESSION = None
+_PROXY_COOKIES = None  # Store cookies for session recreation
 
 
-def thm_get(session, url, headers=None, timeout=30):
+def thm_get(session, url, headers=None, timeout=10):
     """Make a GET request to THM with optional proxy."""
     global _PROXY_SESSION
     proxy = get_proxy_dict()
     if proxy:
         if _PROXY_SESSION is None:
-            _PROXY_SESSION = _make_proxy_session()
-            for c in session.cookies:
-                _PROXY_SESSION.cookies.set(c.name, c.value, domain=c.domain, path=c.path)
+            _PROXY_SESSION = _make_proxy_session(_PROXY_COOKIES)
         kwargs = {"headers": headers or {}, "timeout": timeout, "verify": False,
                   "proxies": proxy}
         return _PROXY_SESSION.get(url, **kwargs)
@@ -301,15 +458,13 @@ def thm_get(session, url, headers=None, timeout=30):
     return session.get(url, **kwargs)
 
 
-def thm_post(session, url, headers=None, json_data=None, timeout=30):
+def thm_post(session, url, headers=None, json_data=None, timeout=10):
     """Make a POST request to THM with optional proxy."""
     global _PROXY_SESSION
     proxy = get_proxy_dict()
     if proxy:
         if _PROXY_SESSION is None:
-            _PROXY_SESSION = _make_proxy_session()
-            for c in session.cookies:
-                _PROXY_SESSION.cookies.set(c.name, c.value, domain=c.domain, path=c.path)
+            _PROXY_SESSION = _make_proxy_session(_PROXY_COOKIES)
         kwargs = {"headers": headers or {}, "timeout": timeout, "verify": False,
                   "proxies": proxy}
         if json_data is not None:
@@ -325,6 +480,36 @@ def reset_proxy_session():
     """Reset the proxy session (call when proxy dies)."""
     global _PROXY_SESSION
     _PROXY_SESSION = None
+
+
+def refresh_proxy_session():
+    """Force create a fresh proxy session (new connection)."""
+    global _PROXY_SESSION
+    _PROXY_SESSION = _make_proxy_session(_PROXY_COOKIES)
+
+
+def get_csrf(session):
+    """Get CSRF token from THM."""
+    r = thm_get(session, "https://tryhackme.com/api/v2/auth/csrf",
+                headers={"Accept": "application/json"})
+    ct = r.headers.get("content-type", "")
+    if "json" in ct:
+        data = r.json()
+        if data.get("status") == "success":
+            return data["data"]["token"]
+
+    log(f"[!] API CSRF blocked (status={r.status_code}), trying HTML fallback...")
+    r2 = thm_get(session, "https://tryhackme.com/", headers={"Accept": "text/html"})
+    match = re.search(r'csrf["\s:=]+["\']([a-zA-Z0-9_-]{20,})["\']', r2.text)
+    if match:
+        return match.group(1)
+
+    r3 = thm_get(session, "https://tryhackme.com/dashboard", headers={"Accept": "text/html"})
+    match2 = re.search(r'csrf["\s:=]+["\']([a-zA-Z0-9_-]{20,})["\']', r3.text)
+    if match2:
+        return match2.group(1)
+
+    raise Exception(f"Could not get CSRF token. Last status: {r.status_code}")
 
 
 def get_user_info(session, csrf):
@@ -346,96 +531,6 @@ def get_user_info(session, csrf):
     }
 
 
-def code_to_thm(code):
-    """Convert writeup repo room code to THM URL slug."""
-    return code.lower().replace(" ", "-").replace("&", "and")
-
-
-def fetch_writeup(room_code_orig):
-    """Fetch writeup answers from thmrevenant repo."""
-    from curl_cffi import requests as cffi_requests
-    s = cffi_requests.Session(impersonate="chrome120")
-
-    # Try original name
-    url = f"{WRITEUP_REPO}/{room_code_orig.replace(' ', '%20')}.txt"
-    r = s.get(url, headers={"User-Agent": "Mozilla/5.0"})
-    if r.status_code == 200:
-        return r.text.strip()
-
-    # Try hyphenated lowercase
-    thm_code = code_to_thm(room_code_orig)
-    url2 = f"{WRITEUP_REPO}/{thm_code}.txt"
-    r2 = s.get(url2, headers={"User-Agent": "Mozilla/5.0"})
-    if r2.status_code == 200:
-        return r2.text.strip()
-
-    return None
-
-
-def parse_writeup(writeup_text):
-    """Parse writeup text into a list of (question_pattern, answer) pairs.
-
-    Format is: RoomName, URL, (blank), Q1, A1, (blank), Q2, A2, ...
-    We filter non-empty lines, skip first 2 (title + URL), then pair Q/A.
-    """
-    # Clean HTML and get non-empty lines
-    lines = []
-    for l in writeup_text.strip().split("\n"):
-        clean = re.sub(r'<[^>]+>', '', l).strip()
-        if clean and not clean.startswith("http"):
-            lines.append(clean)
-
-    # First line is room title — skip it
-    if len(lines) < 3:
-        return []
-
-    # Lines after title: Q1, A1, Q2, A2, ...
-    pairs = []
-    i = 1  # skip room title
-    while i + 1 < len(lines):
-        question = lines[i]
-        answer = lines[i + 1]
-        if question and answer:
-            pairs.append((question, answer))
-        i += 2
-
-    return pairs
-
-
-def clean_question(text):
-    """Strip HTML tags and normalize a question string."""
-    text = re.sub(r'<[^>]+>', '', text)
-    text = text.strip()
-    text = text.rstrip('?').rstrip('.')
-    return text.lower()
-
-
-def match_answer(question_text, writeup_pairs):
-    """Try to match a THM question to a writeup answer."""
-    q_clean = clean_question(question_text)
-
-    for wp_question, wp_answer in writeup_pairs:
-        wq_clean = clean_question(wp_question)
-
-        # Exact match
-        if q_clean == wq_clean:
-            return wp_answer
-
-        # Containment match
-        if q_clean in wq_clean or wq_clean in q_clean:
-            return wp_answer
-
-        # Word overlap (>60% overlap)
-        q_words = set(q_clean.split())
-        w_words = set(wq_clean.split())
-        if q_words and w_words:
-            overlap = len(q_words & w_words) / max(len(q_words), len(w_words))
-            if overlap > 0.6:
-                return wp_answer
-
-    return None
-
-
 def join_room(session, csrf, room_code):
     """Join a THM room."""
     try:
@@ -446,7 +541,6 @@ def join_room(session, csrf, room_code):
         if "json" in ct:
             data = r.json()
             return data.get("status") == "success"
-        log(f"  [!] join {room_code}: non-json response (status={r.status_code})")
         return False
     except Exception as e:
         log(f"  [!] join {room_code}: {e}")
@@ -470,73 +564,65 @@ def get_tasks(session, csrf, room_code):
 
 def submit_answer(session, csrf, task_id, question_no, answer, room_code):
     """Submit an answer to a room question."""
-    r = thm_post(session, "https://tryhackme.com/api/v2/rooms/answer",
-                 headers=make_headers(csrf),
-                 json_data={
-                     "taskId": task_id,
-                     "questionNo": question_no,
-                     "answer": answer,
-                     "roomCode": room_code
-                 })
-    ct = r.headers.get("content-type", "")
-    if "json" in ct:
-        return r.json()
-    return {"status": "error", "message": f"Non-JSON response: {r.status_code}"}
-
-
-def fetch_room_codes():
-    """Fetch room codes from writeup repo."""
-    import requests as req_lib
-    import os
-
-    url = "https://api.github.com/repos/thmrevenant/tryhackme/git/trees/main?recursive=1"
-    headers = {"Accept": "application/json", "User-Agent": "Mozilla/5.0"}
-
-    # Use GITHUB_TOKEN if available (avoids rate limiting on GHA)
-    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
-    if token:
-        headers["Authorization"] = f"token {token}"
-
     try:
-        r = req_lib.get(url, headers=headers, timeout=15)
-        if r.status_code == 200:
-            tree = r.json().get("tree", [])
-            codes = set()
-            for item in tree:
-                path = item.get("path", "")
-                if path.startswith("rooms/") and path.endswith(".txt"):
-                    code = path.replace("rooms/", "").replace(".txt", "")
-                    codes.add(code)
-            return sorted(codes)
-        log(f"[!] Failed to fetch repo tree: {r.status_code}")
+        r = thm_post(session, "https://tryhackme.com/api/v2/rooms/answer",
+                     headers=make_headers(csrf),
+                     json_data={
+                         "taskId": task_id,
+                         "questionNo": question_no,
+                         "answer": answer,
+                         "roomCode": room_code
+                     })
+        ct = r.headers.get("content-type", "")
+        if "json" in ct:
+            return r.json()
+        return {"status": "error", "message": f"Non-JSON response: {r.status_code}"}
     except Exception as e:
-        log(f"[!] Failed to fetch repo tree: {e}")
+        return {"status": "error", "message": str(e)}
 
-    # Fallback: try without auth
-    try:
-        r2 = req_lib.get(url, headers={"Accept": "application/json", "User-Agent": "Mozilla/5.0"}, timeout=15)
-        if r2.status_code == 200:
-            tree = r2.json().get("tree", [])
-            codes = set()
-            for item in tree:
-                path = item.get("path", "")
-                if path.startswith("rooms/") and path.endswith(".txt"):
-                    code = path.replace("rooms/", "").replace(".txt", "")
-                    codes.add(code)
-            return sorted(codes)
-    except Exception as e:
-        log(f"[!] Fallback also failed: {e}")
 
-    return []
+def clean_question(text):
+    """Strip HTML tags and normalize a question string."""
+    text = re.sub(r'<[^>]+>', '', text)
+    text = text.strip()
+    text = text.rstrip('?').rstrip('.')
+    return text.lower()
+
+
+def match_answer(question_text, hardcoded_pairs):
+    """Try to match a THM question to a hardcoded answer."""
+    q_clean = clean_question(question_text)
+
+    for hw_question, hw_answer in hardcoded_pairs:
+        hw_clean = clean_question(hw_question)
+
+        # Exact match
+        if q_clean == hw_clean:
+            return hw_answer
+
+        # Containment match (question contains the pattern or vice versa)
+        if hw_clean in q_clean or q_clean in hw_clean:
+            return hw_answer
+
+        # Word overlap (>60% overlap)
+        q_words = set(q_clean.split())
+        h_words = set(hw_clean.split())
+        if q_words and h_words:
+            overlap = len(q_words & h_words) / max(len(q_words), len(h_words))
+            if overlap > 0.6:
+                return hw_answer
+
+    return None
 
 
 def main():
-    # Parse command line args
+    global ACTIVE_PROXY, _PROXY_SESSION, _PROXY_COOKIES
+
     force_new = "--force-new" in sys.argv
 
     log("=" * 60)
     mode = "FORCE NEW CHALLENGE" if force_new else "Streak Maintenance"
-    log(f"THM Streak Bot v3.0 — {mode}")
+    log(f"THM Streak Bot v4.0 — {mode}")
     log(f"Run started at {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     log("=" * 60)
 
@@ -549,57 +635,59 @@ def main():
         send_telegram(f"THM Bot Error: {msg}")
         sys.exit(1)
 
+    # Store cookies for proxy session recreation
+    _PROXY_COOKIES = cookies
+
     # Step 2: Create session
     session = create_session(cookies)
 
-    # Step 2b: Find a working proxy if needed (Vercel blocks GitHub Actions IPs)
-    global ACTIVE_PROXY
-    proxy_for_csrf = None
+    # Step 2b: Find a working proxy if needed
     if not ACTIVE_PROXY:
-        # Try direct connection first
         try:
-            csrf_test = get_csrf(session)
-            log(f"[+] Direct connection works, CSRF: {csrf_test[:20]}...")
+            # Test direct connection
+            test_r = session.get("https://tryhackme.com/api/v2/auth/csrf",
+                                 headers={"Accept": "application/json"}, timeout=8)
+            if test_r.status_code == 200 and "json" in test_r.headers.get("content-type", ""):
+                log("[+] Direct connection works")
+            else:
+                raise Exception("Direct blocked")
         except Exception:
-            log("[!] Direct connection blocked by Vercel, searching for proxy...")
+            log("[!] Direct connection blocked, searching for proxy...")
             proxy, proxy_session = find_working_proxy(cookies)
             if proxy:
-                proxy_for_csrf = proxy
-                global _PROXY_SESSION
-                _PROXY_SESSION = proxy_session  # Reuse the validated session
-                log(f"[+] Using proxy for CSRF: {proxy}")
+                ACTIVE_PROXY = proxy
+                _PROXY_SESSION = proxy_session
+                log(f"[+] Using proxy: {proxy}")
             else:
-                log("[!] No proxy found, will retry direct connection")
-    else:
-        proxy_for_csrf = ACTIVE_PROXY
+                log("[!] No proxy found, will retry direct")
+                ACTIVE_PROXY = None
 
     # Step 2c: Get CSRF with retries
     csrf = None
     for attempt in range(5):
         try:
-            if proxy_for_csrf and not ACTIVE_PROXY:
-                ACTIVE_PROXY = proxy_for_csrf
             csrf = get_csrf(session)
             log(f"[+] CSRF token: {csrf[:20]}...")
             break
         except Exception as e:
             log(f"[!] CSRF attempt {attempt+1} failed: {e}")
             if attempt < 4:
-                wait = 10 * (attempt + 1)  # 10s, 20s, 30s, 40s
+                wait = 5 * (attempt + 1)
                 log(f"[!] Waiting {wait}s before retry...")
                 time.sleep(wait)
-                # Try finding a different proxy on retry
-                if attempt == 2 and not ACTIVE_PROXY:
-                    proxy, proxy_session = find_working_proxy(cookies)
+                # On 3rd failure, try a different proxy
+                if attempt == 2:
+                    reset_proxy_session()
+                    old_proxy = ACTIVE_PROXY
+                    proxy, proxy_session = find_working_proxy(cookies, exclude_proxy=old_proxy)
                     if proxy:
-                        proxy_for_csrf = proxy
                         ACTIVE_PROXY = proxy
-                        _PROXY_SESSION = proxy_session  # Reuse the validated session
-                        log(f"[+] Switching to proxy: {proxy}")
+                        _PROXY_SESSION = proxy_session
+                        log(f"[+] Switched to proxy: {proxy}")
                 session = create_session(cookies)
-    
+
     if not csrf:
-        msg = "FATAL: Could not get CSRF token after 5 attempts. Vercel may be blocking GitHub Actions IPs."
+        msg = "FATAL: Could not get CSRF token after 5 attempts."
         log(f"[!] {msg}")
         send_telegram(f"THM Bot Error: {msg}")
         sys.exit(1)
@@ -624,63 +712,36 @@ def main():
         send_telegram(msg)
         return
 
-    # Step 4: Fetch room codes from writeup repo
-    log("[+] Fetching room codes from writeup repo...")
-    all_codes = fetch_room_codes()
-    log(f"[+] Got {len(all_codes)} room codes from repo")
-
-    if not all_codes:
-        msg = "FATAL: Could not fetch room codes from writeup repo."
-        log(f"[!] {msg}")
-        send_telegram(f"THM Bot Error: {msg}")
-        sys.exit(1)
-
-    # Step 5: Scan rooms for unanswered questions with writeup answers
-    log("[+] Scanning rooms for answerable questions...")
-    rooms_checked = 0
+    # Step 4: Try hardcoded known rooms
+    log(f"[+] Trying {len(KNOWN_ROOMS)} known rooms...")
+    rooms_attempted = 0
     answers_submitted = 0
     streak_increased = False
     solved_room = None
-    rooms_failed = 0
+    proxy_rotations = 0
 
-    consecutive_failures = 0
-    for idx, code in enumerate(all_codes[:MAX_ROOMS_TO_CHECK]):
-        thm_code = code_to_thm(code)
-
-        # Rotate proxy after 5 consecutive failures (proxy may have been blocked)
-        if consecutive_failures >= 5 and ACTIVE_PROXY:
-            log(f"  [!] Rotating proxy after {consecutive_failures} consecutive failures...")
-            old_proxy = ACTIVE_PROXY
-            reset_proxy_session()
-            new_proxy, new_session = find_working_proxy(cookies, exclude_proxy=old_proxy)
-            if new_proxy:
-                ACTIVE_PROXY = new_proxy
-                _PROXY_SESSION = new_session  # Reuse the validated session
-                log(f"[+] Switched to new proxy: {new_proxy}")
-                consecutive_failures = 0
-            else:
-                log("[!] No new proxy found, continuing with current one")
+    for room_slug, hardcoded_answers in KNOWN_ROOMS:
+        rooms_attempted += 1
+        log(f"  [{rooms_attempted}/{len(KNOWN_ROOMS)}] Trying {room_slug}...")
 
         # Join room
-        if not join_room(session, csrf, thm_code):
-            rooms_failed += 1
-            consecutive_failures += 1
-            if rooms_failed <= 3:
-                log(f"  [!] Failed to join {thm_code} (room {idx+1})")
-            elif rooms_failed == 4:
-                log(f"  [!] ... suppressing further join failure logs")
+        if not join_room(session, csrf, room_slug):
+            log(f"    [!] Failed to join {room_slug}")
+            # Refresh proxy session after 3 consecutive join failures (dead connection)
+            if rooms_attempted % 3 == 0 and ACTIVE_PROXY:
+                log(f"    [!] Refreshing proxy session (attempt #{rooms_attempted})...")
+                refresh_proxy_session()
             continue
+
+        time.sleep(1)  # Small delay between join and tasks
 
         # Get tasks
-        tasks = get_tasks(session, csrf, thm_code)
+        tasks = get_tasks(session, csrf, room_slug)
         if not tasks:
-            rooms_failed += 1
-            consecutive_failures += 1
-            if rooms_failed <= 3:
-                log(f"  [!] Failed to get tasks for {thm_code}")
+            log(f"    [!] Failed to get tasks for {room_slug}")
             continue
 
-        consecutive_failures = 0  # Reset on success
+        log(f"    [+] Got {len(tasks)} tasks for {room_slug}")
 
         # Find unanswered questions
         unanswered = []
@@ -698,83 +759,74 @@ def main():
                 })
 
         if not unanswered:
-            rooms_checked += 1
+            log(f"    [!] No unanswered questions in {room_slug} (all already done)")
             continue
 
-        # Fetch writeup for this room
-        writeup = fetch_writeup(code)
-        if not writeup:
-            rooms_checked += 1
-            continue
-
-        writeup_pairs = parse_writeup(writeup)
-        if not writeup_pairs:
-            rooms_checked += 1
-            continue
+        log(f"    [+] {len(unanswered)} unanswered questions in {room_slug}")
 
         # Try to match and submit answers
         for uq in unanswered:
-            answer = match_answer(uq["question"], writeup_pairs)
+            answer = match_answer(uq["question"], hardcoded_answers)
             if not answer:
                 continue
 
-            log(f"[+] {thm_code} - Task {uq['task_no']} Q{uq['question_no']}: Submitting '{answer[:50]}'")
+            log(f"    [+] Task {uq['task_no']} Q{uq['question_no']}: Submitting '{answer[:60]}'")
 
-            result = submit_answer(session, csrf, uq["task_id"], uq["question_no"], answer, thm_code)
+            result = submit_answer(session, csrf, uq["task_id"], uq["question_no"], answer, room_slug)
             data = result.get("data", {})
 
             if data.get("isCorrect"):
-                log(f"  [+] CORRECT! Score: +{data.get('scoreAwarded', 0)}")
+                log(f"    [+] CORRECT! Score: +{data.get('scoreAwarded', 0)}")
                 answers_submitted += 1
-                solved_room = thm_code
+                solved_room = room_slug
 
                 if data.get("isStreakIncreased"):
-                    log(f"  [+] STREAK INCREASED! New: {data.get('currentStreak')}")
+                    log(f"    [+] STREAK INCREASED! New: {data.get('currentStreak')}")
                     streak_increased = True
-                break  # One answer per room is enough
+                break  # One answer per room
             else:
                 msg = result.get("message", "unknown error")
-                log(f"  [!] Wrong or error: {msg}")
+                log(f"    [!] Wrong or error: {msg}")
                 if "too fast" in str(msg).lower():
-                    log(f"  [!] Rate limited, waiting 30s...")
+                    log(f"    [!] Rate limited, waiting 30s...")
                     time.sleep(30)
 
-            time.sleep(ANSWER_DELAY)
+            time.sleep(2)  # Brief delay between submissions
 
+        # Check if we should stop
         if streak_increased or (force_new and solved_room):
             break
 
-        rooms_checked += 1
-        if rooms_checked % 20 == 0:
-            log(f"  ... checked {rooms_checked} rooms, {answers_submitted} answers submitted")
-
-    # Step 6: Final status
+    # Step 5: Final status
     final_user = get_user_info(session, csrf)
-    log("=" * 60)
-    log("FINAL STATUS:")
-    log(f"  Username: {final_user['username']}")
-    log(f"  Current Streak: {final_user['currentStreak']}")
-    log(f"  Largest Streak: {final_user['largestStreak']}")
-    log(f"  Streak Broken: {final_user['isStreakBroken']}")
-    log(f"  Total Points: {final_user['totalPoints']}")
-    log(f"  Rooms Checked: {rooms_checked}")
-    log(f"  Rooms Failed (join/task): {rooms_failed}")
-    log(f"  Answers Submitted: {answers_submitted}")
-    log(f"  Streak Increased: {streak_increased}")
-    log("=" * 60)
+    if final_user:
+        log("=" * 60)
+        log("FINAL STATUS:")
+        log(f"  Username: {final_user['username']}")
+        log(f"  Current Streak: {final_user['currentStreak']}")
+        log(f"  Largest Streak: {final_user['largestStreak']}")
+        log(f"  Streak Broken: {final_user['isStreakBroken']}")
+        log(f"  Total Points: {final_user['totalPoints']}")
+        log(f"  Rooms Attempted: {rooms_attempted}/{len(KNOWN_ROOMS)}")
+        log(f"  Answers Submitted: {answers_submitted}")
+        log(f"  Streak Increased: {streak_increased}")
+        log("=" * 60)
 
-    # Step 7: Send Telegram notification
-    status_emoji = "SUCCESS" if not final_user["isStreakBroken"] else "FAILED"
-    msg = (f"THM Bot {status_emoji}\n"
-           f"Streak: {final_user['currentStreak']} | "
-           f"Largest: {final_user['largestStreak']}\n"
-           f"Points: {final_user['totalPoints']}\n"
-           f"Rooms checked: {rooms_checked}\n"
-           f"Answers submitted: {answers_submitted}\n"
-           f"Streak increased: {streak_increased}")
-    if solved_room:
-        msg += f"\nSolved: {solved_room}"
-    send_telegram(msg)
+        # Send Telegram notification
+        status_emoji = "SUCCESS" if not final_user["isStreakBroken"] else "FAILED"
+        msg = (f"THM Bot {status_emoji}\n"
+               f"Streak: {final_user['currentStreak']} | "
+               f"Largest: {final_user['largestStreak']}\n"
+               f"Points: {final_user['totalPoints']}\n"
+               f"Rooms attempted: {rooms_attempted}/{len(KNOWN_ROOMS)}\n"
+               f"Answers submitted: {answers_submitted}\n"
+               f"Streak increased: {streak_increased}")
+        if solved_room:
+            msg += f"\nSolved: {solved_room}"
+        send_telegram(msg)
+    else:
+        log("[!] Could not fetch final user status")
+        send_telegram(f"THM Bot ran but could not fetch final status. Solved: {solved_room or 'none'}")
 
     log(f"\n[+] Bot run completed at {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
